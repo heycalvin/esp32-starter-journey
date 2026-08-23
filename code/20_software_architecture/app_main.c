@@ -13,14 +13,14 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 
-// 引入分层模块头文件
-#include "bsp_led.h"
-#include "bsp_button.h"
-#include "bsp_sensor.h"
-#include "sys_event_bus.h"
-#include "sys_fsm.h"
-#include "sys_guard_wdt.h"
-#include "app_business.h"
+// 引入清晰分层头文件 (IDE 与构建系统均可秒级解析)
+#include "bsp/bsp_led.h"
+#include "bsp/bsp_button.h"
+#include "bsp/bsp_sensor.h"
+#include "services/sys_event_bus.h"
+#include "services/sys_fsm.h"
+#include "services/sys_guard_wdt.h"
+#include "app/app_business.h"
 
 static const char *TAG = "MAIN_SYSTEM";
 

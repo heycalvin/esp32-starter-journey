@@ -13,17 +13,17 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 
-// 引入全栈分层组件
-#include "bsp_board.h"
-#include "bsp_led_button.h"
-#include "bsp_sensors.h"
-#include "bsp_ws2812.h"
-#include "srv_event_bus.h"
-#include "srv_wifi_sntp.h"
-#include "srv_mqtt.h"
-#include "srv_ble.h"
-#include "srv_sentry_power.h"
-#include "app_hub_manager.h"
+// 引入全栈分层清晰路径组件
+#include "bsp/bsp_board.h"
+#include "bsp/bsp_led_button.h"
+#include "bsp/bsp_sensors.h"
+#include "bsp/bsp_ws2812.h"
+#include "services/srv_event_bus.h"
+#include "services/srv_wifi_sntp.h"
+#include "services/srv_mqtt.h"
+#include "services/srv_ble.h"
+#include "services/srv_sentry_power.h"
+#include "app/app_hub_manager.h"
 
 static const char *TAG = "SUPER_HUB_MAIN";
 

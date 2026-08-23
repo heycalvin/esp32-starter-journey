@@ -1,7 +1,7 @@
 file(GLOB_RECURSE SOURCES "*.c")
 
 set(EXTRA_INCLUDES "")
-foreach(dir "bsp/include" "services/include" "ui/include" "app/include")
+foreach(dir "bsp" "services" "ui" "app")
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${dir}")
         list(APPEND EXTRA_INCLUDES "${dir}")
     endif()
