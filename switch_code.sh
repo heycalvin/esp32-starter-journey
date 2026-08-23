@@ -136,14 +136,35 @@ else
     TARGET_SRC="${EXP_FILES[0]}"
 fi
 
-# 执行切换
-cp "${TARGET_SRC}" "${TARGET_MAIN}"
+# 清理 main/ 目录下的分层子目录 (bsp, services, ui, app)，防止跨关卡污染
+rm -rf "${PROJECT_ROOT}/main/bsp" "${PROJECT_ROOT}/main/services" "${PROJECT_ROOT}/main/ui" "${PROJECT_ROOT}/main/app"
 
-REL_SRC="${TARGET_SRC#${PROJECT_ROOT}/}"
+# 检查是否为多文件模块化架构目录（如第 20、21 关）
+if [ -d "${MATCH_DIR}/bsp" ] || [ -d "${MATCH_DIR}/services" ] || [ -d "${MATCH_DIR}/ui" ] || [ -d "${MATCH_DIR}/app" ]; then
+    echo -e "📦 检测到多文件模块化工程架构，正在同步分层组件..."
+    [ -d "${MATCH_DIR}/bsp" ] && cp -r "${MATCH_DIR}/bsp" "${PROJECT_ROOT}/main/"
+    [ -d "${MATCH_DIR}/services" ] && cp -r "${MATCH_DIR}/services" "${PROJECT_ROOT}/main/"
+    [ -d "${MATCH_DIR}/ui" ] && cp -r "${MATCH_DIR}/ui" "${PROJECT_ROOT}/main/"
+    [ -d "${MATCH_DIR}/app" ] && cp -r "${MATCH_DIR}/app" "${PROJECT_ROOT}/main/"
+    
+    if [ -f "${MATCH_DIR}/main/app_main.c" ]; then
+        cp "${MATCH_DIR}/main/app_main.c" "${TARGET_MAIN}"
+    elif [ -f "${MATCH_DIR}/app_main.c" ]; then
+        cp "${MATCH_DIR}/app_main.c" "${TARGET_MAIN}"
+    elif [ -n "${TARGET_SRC}" ]; then
+        cp "${TARGET_SRC}" "${TARGET_MAIN}"
+    fi
+    REL_SRC="${MATCH_DIR#${PROJECT_ROOT}/} (模块化多文件工程)"
+else
+    # 执行标准单文件切换
+    cp "${TARGET_SRC}" "${TARGET_MAIN}"
+    REL_SRC="${TARGET_SRC#${PROJECT_ROOT}/}"
+fi
+
 echo -e "\033[32m=================================================================\033[0m"
 echo -e "\033[32m✅ 成功切换示例代码！\033[0m"
-echo -e "   源文件: \033[1;33m${REL_SRC}\033[0m"
-echo -e "   目标位: \033[1;36mmain/app_main.c\033[0m"
+echo -e "   源目录/文件: \033[1;33m${REL_SRC}\033[0m"
+echo -e "   目标工程位: \033[1;36mmain/ [app_main.c + 分层组件]\033[0m"
 echo -e "\033[32m=================================================================\033[0m"
 
 # 检查后续指令 (--build / --flash)
@@ -160,11 +181,13 @@ for arg in "$@"; do
     fi
 
     if [ "${arg}" == "--build" ] || [ "${arg}" == "-b" ]; then
-        echo -e "\n🔨 正在执行编译 (idf.py build)..."
+        echo -e "\n🔨 正在执行编译 (idf.py reconfigure && idf.py build)..."
+        idf.py reconfigure >/dev/null 2>&1 || true
         idf.py build
         break
     elif [ "${arg}" == "--flash" ] || [ "${arg}" == "-f" ]; then
         echo -e "\n⚡ 正在执行烧录与串口监视 (idf.py flash monitor)..."
+        idf.py reconfigure >/dev/null 2>&1 || true
         idf.py flash monitor
         break
     fi
