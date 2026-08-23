@@ -113,12 +113,19 @@ fi
 # 根据实验号查找
 TARGET_SRC=""
 if [ -n "$2" ] && [[ "$2" =~ ^[0-9]+$ ]]; then
-    TARGET_INDEX=$((2 - 1))
-    # 尝试按序号获取
-    if [ "$2" -le "${TOTAL_EXPS}" ] && [ "$2" -ge 1 ]; then
+    PADDED_EXP=$(printf "%02d" "$2" 2>/dev/null || echo "$2")
+    MATCHED_BY_PREFIX=$(find "${MATCH_DIR}" -maxdepth 1 -name "${PADDED_EXP}_*.c" | head -n 1)
+    
+    if [ -n "${MATCHED_BY_PREFIX}" ] && [ -f "${MATCHED_BY_PREFIX}" ]; then
+        TARGET_SRC="${MATCHED_BY_PREFIX}"
+    elif [ "$2" -le "${TOTAL_EXPS}" ] && [ "$2" -ge 1 ]; then
         TARGET_SRC="${EXP_FILES[$(( $2 - 1 ))]}"
     else
-        echo -e "\033[31m❌ 错误：第 ${CH_NUM} 关只有 ${TOTAL_EXPS} 个实验，你指定的实验号是 $2！\033[0m"
+        echo -e "\033[31m❌ 错误：第 ${CH_NUM} 关未找到编号为 $2 的实验！\033[0m"
+        echo "可用实验文件："
+        for f in "${EXP_FILES[@]}"; do
+            echo "  - $(basename "$f")"
+        done
         exit 1
     fi
 else

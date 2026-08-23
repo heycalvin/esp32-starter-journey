@@ -1,6 +1,6 @@
 {
   "terminal.integrated.defaultProfile.windows": "PowerShell",
-  "idf.port": "/dev/tty.wchusbserial110",
+  "idf.port": "/dev/tty.wchusbserial10",
   "idf.flashType": "UART",
   "files.associations": {
     "*.c": "c",

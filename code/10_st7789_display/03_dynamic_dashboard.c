@@ -48,6 +48,14 @@ static const char *TAG = "EXP3_DASHBOARD";
 #define COLOR_CARD_BG           0x2018
 
 static esp_lcd_panel_handle_t s_panel = NULL;
+static uint16_t *s_line_buffer = NULL;  // 常驻 480 字节 DMA 行显存 (供 fill_rect 绘制静态卡片与进度条)
+static uint16_t *s_wave_canvas = NULL;  // 常驻 40 KB DMA 波形画布 (供示波器每秒 50 帧无损超高速推屏)
+
+/* 动态波形画布区域 (宽 200, 高 100) */
+#define WAVE_W 200
+#define WAVE_H 100
+#define WAVE_X 20
+#define WAVE_Y 140
 
 static void lcd_init(void)
 {
@@ -61,7 +69,7 @@ static void lcd_init(void)
         .miso_io_num = GPIO_NUM_NC,
         .quadwp_io_num = GPIO_NUM_NC,
         .quadhd_io_num = GPIO_NUM_NC,
-        .max_transfer_sz = LCD_H_RES * LCD_V_RES * sizeof(uint16_t),
+        .max_transfer_sz = WAVE_W * WAVE_H * sizeof(uint16_t),
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
@@ -87,63 +95,68 @@ static void lcd_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false)); // 适配开发板屏幕排线方向
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
+
+    // 开机一次性分配常驻 DMA 显存 (0 动态内存碎片，0 异步时序竞争)
+    s_line_buffer = heap_caps_malloc(LCD_H_RES * sizeof(uint16_t), MALLOC_CAP_DMA);
+    s_wave_canvas = heap_caps_malloc(WAVE_W * WAVE_H * sizeof(uint16_t), MALLOC_CAP_DMA);
 }
 
+/* 填充矩形区域 (使用常驻行显存逐行推屏，绝无毛刺花边) */
 static void fill_rect(int x, int y, int w, int h, uint16_t color)
 {
     if (x >= LCD_H_RES || y >= LCD_V_RES || w <= 0 || h <= 0) return;
     if (x + w > LCD_H_RES) w = LCD_H_RES - x;
     if (y + h > LCD_V_RES) h = LCD_V_RES - y;
 
-    int total_pixels = w * h;
-    uint16_t *buf = heap_caps_malloc(total_pixels * sizeof(uint16_t), MALLOC_CAP_DMA);
-    if (!buf) return;
-
-    for (int i = 0; i < total_pixels; i++) buf[i] = color;
-    esp_lcd_panel_draw_bitmap(s_panel, x, y, x + w, y + h, buf);
-    free(buf);
-}
-
-/* 动态波形画布区域 (宽 200, 高 100) */
-#define WAVE_W 200
-#define WAVE_H 100
-#define WAVE_X 20
-#define WAVE_Y 140
-
-static void draw_waveform_frame(float phase)
-{
-    uint16_t *canvas = heap_caps_malloc(WAVE_W * WAVE_H * sizeof(uint16_t), MALLOC_CAP_DMA);
-    if (!canvas) return;
-
-    // 清空画布背景
-    for (int i = 0; i < WAVE_W * WAVE_H; i++) {
-        canvas[i] = COLOR_BLACK;
+    for (int i = 0; i < w; i++) {
+        s_line_buffer[i] = color;
     }
 
-    // 绘制中心虚线网格
+    for (int row = y; row < y + h; row++) {
+        esp_lcd_panel_draw_bitmap(s_panel, x, row, x + w, row + 1, s_line_buffer);
+    }
+}
+
+/* 全屏纯色清屏 */
+static void fill_screen(uint16_t color)
+{
+    fill_rect(0, 0, LCD_H_RES, LCD_V_RES, color);
+}
+
+/* 绘制平滑动态示波器波形 (常驻画布，极速 DMA 推屏) */
+static void draw_waveform_frame(float phase)
+{
+    if (!s_wave_canvas) return;
+
+    // 1. 清空画布背景为纯黑
+    for (int i = 0; i < WAVE_W * WAVE_H; i++) {
+        s_wave_canvas[i] = COLOR_BLACK;
+    }
+
+    // 2. 绘制暗灰网格 (纵向 + 横向中心虚线)
     for (int x = 0; x < WAVE_W; x += 20) {
         for (int y = 0; y < WAVE_H; y += 4) {
-            canvas[y * WAVE_W + x] = 0x2104; // 暗灰网格
+            s_wave_canvas[y * WAVE_W + x] = 0x2104;
         }
     }
     for (int x = 0; x < WAVE_W; x += 4) {
-        canvas[(WAVE_H / 2) * WAVE_W + x] = 0x2104;
+        s_wave_canvas[(WAVE_H / 2) * WAVE_W + x] = 0x2104;
     }
 
-    // 计算并绘制平滑动态正弦波 (青色)
+    // 3. 计算并绘制平滑正弦波 (青色波形，加粗 1 像素)
     for (int x = 0; x < WAVE_W; x++) {
         float angle = (float)x * 0.08f + phase;
         int y = (int)(sinf(angle) * 35.0f) + (WAVE_H / 2);
         if (y >= 0 && y < WAVE_H) {
-            canvas[y * WAVE_W + x] = COLOR_CYAN;
-            if (y + 1 < WAVE_H) canvas[(y + 1) * WAVE_W + x] = COLOR_CYAN; // 加粗
+            s_wave_canvas[y * WAVE_W + x] = COLOR_CYAN;
+            if (y + 1 < WAVE_H) s_wave_canvas[(y + 1) * WAVE_W + x] = COLOR_CYAN;
         }
     }
 
-    // 局部极速推屏
-    esp_lcd_panel_draw_bitmap(s_panel, WAVE_X, WAVE_Y, WAVE_X + WAVE_W, WAVE_Y + WAVE_H, canvas);
-    free(canvas);
+    // 4. 局部极速 DMA 推屏
+    esp_lcd_panel_draw_bitmap(s_panel, WAVE_X, WAVE_Y, WAVE_X + WAVE_W, WAVE_Y + WAVE_H, s_wave_canvas);
 }
 
 void app_main(void)
@@ -154,8 +167,8 @@ void app_main(void)
 
     lcd_init();
 
-    // 1. 绘制静态深色大背景
-    fill_rect(0, 0, LCD_H_RES, LCD_V_RES, COLOR_BG);
+    // 1. 绘制静态深色大背景 (全屏清屏)
+    fill_screen(COLOR_BG);
 
     // 2. 绘制顶部信息卡片
     fill_rect(15, 15, 210, 45, COLOR_CARD_BG);

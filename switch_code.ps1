@@ -149,12 +149,21 @@ if (-not $expFiles -or $expFiles.Count -eq 0) {
     exit 1
 }
 
-if ($expNum -gt $expFiles.Count -or $expNum -lt 1) {
-    Write-Host "`n❌ 错误：第 $chNum 关只有 $($expFiles.Count) 个实验，你指定的实验号是 $expNum！" -ForegroundColor Red
+$paddedExp = "{0:D2}" -f $expNum
+$matchedByPrefix = $expFiles | Where-Object { $_.Name -like "${paddedExp}_*.c" }
+
+if ($matchedByPrefix -and $matchedByPrefix.Count -gt 0) {
+    $targetSrc = $matchedByPrefix[0].FullName
+} elseif ($expNum -le $expFiles.Count -and $expNum -ge 1) {
+    $targetSrc = $expFiles[$expNum - 1].FullName
+} else {
+    Write-Host "`n❌ 错误：第 $chNum 关未找到编号为 $expNum 的实验！" -ForegroundColor Red
+    Write-Host "可用实验文件："
+    foreach ($f in $expFiles) {
+        Write-Host "  - $($f.Name)"
+    }
     exit 1
 }
-
-$targetSrc = $expFiles[$expNum - 1].FullName
 Copy-Item -Path $targetSrc -Destination $TargetMain -Force
 
 $relSrc = $targetSrc.Replace($ProjectRoot, "").TrimStart("\/")

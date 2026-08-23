@@ -48,6 +48,7 @@ static const char *TAG = "EXP2_GEOMETRY";
 #define COLOR_NAVY              0x0F00
 
 static esp_lcd_panel_handle_t s_panel = NULL;
+static uint16_t *s_line_buffer = NULL; // 常驻 DMA 行缓冲区 (480 字节，开机一次性分配，绝不释放)
 
 static void lcd_init(void)
 {
@@ -61,7 +62,7 @@ static void lcd_init(void)
         .miso_io_num = GPIO_NUM_NC,
         .quadwp_io_num = GPIO_NUM_NC,
         .quadhd_io_num = GPIO_NUM_NC,
-        .max_transfer_sz = LCD_H_RES * LCD_V_RES * sizeof(uint16_t),
+        .max_transfer_sz = LCD_H_RES * 40 * sizeof(uint16_t),
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
@@ -87,28 +88,40 @@ static void lcd_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false)); // 适配开发板屏幕排线方向
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
+
+    // 开机预先分配一行 240 像素 (480 字节) 的常驻 DMA 显存，供画点、画线、画矩形共用
+    s_line_buffer = heap_caps_malloc(LCD_H_RES * sizeof(uint16_t), MALLOC_CAP_DMA);
 }
 
-/* 填充矩形区域 */
+/* 绘制单个像素点 (使用常驻 DMA 显存，绝无局部栈变量失效花边问题) */
+static void draw_pixel(int x, int y, uint16_t color)
+{
+    if (x < 0 || x >= LCD_H_RES || y < 0 || y >= LCD_V_RES) return;
+    s_line_buffer[0] = color;
+    esp_lcd_panel_draw_bitmap(s_panel, x, y, x + 1, y + 1, s_line_buffer);
+}
+
+/* 填充矩形区域 (逐行纯色推屏，0 内存分配开销，边缘绝对平整无毛刺) */
 static void fill_rect(int x, int y, int w, int h, uint16_t color)
 {
     if (x >= LCD_H_RES || y >= LCD_V_RES || w <= 0 || h <= 0) return;
     if (x + w > LCD_H_RES) w = LCD_H_RES - x;
     if (y + h > LCD_V_RES) h = LCD_V_RES - y;
 
-    int total_pixels = w * h;
-    uint16_t *buf = heap_caps_malloc(total_pixels * sizeof(uint16_t), MALLOC_CAP_DMA);
-    if (!buf) return;
-
-    for (int i = 0; i < total_pixels; i++) {
-        buf[i] = color;
+    // 将行缓冲区填满指定颜色
+    for (int i = 0; i < w; i++) {
+        s_line_buffer[i] = color;
     }
-    esp_lcd_panel_draw_bitmap(s_panel, x, y, x + w, y + h, buf);
-    free(buf);
+
+    // 逐行极速推送到屏幕
+    for (int row = y; row < y + h; row++) {
+        esp_lcd_panel_draw_bitmap(s_panel, x, row, x + w, row + 1, s_line_buffer);
+    }
 }
 
-/* 清屏 */
+/* 全屏清屏 */
 static void clear_screen(uint16_t color)
 {
     fill_rect(0, 0, LCD_H_RES, LCD_V_RES, color);

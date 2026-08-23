@@ -1,224 +1,206 @@
 /**
- * 🌟 ESP32 物联网实战 —— 第 18 关 终极大结局 实验 2：桌面智能气象站与物联网超级中控台 (毕业设计全栈总成)
+ * 🌟 ESP32 物联网实战 —— 第 10 关 实验 3：动态示波器波形与高帧率仪表盘 (终极综合)
  * 
- * 🎯 终极全栈技能融合：
- *    1. 【网络连接中枢】：Wi-Fi 自动 STA 连接 + SNTP 毫秒级网络自动授时；
- *    2. 【云端物联网中枢】：MQTT 双向通信，周期上报温度/湿度/测距数据，接收远程灯控指令；
- *    3. 【硬件感知中枢】：多传感器数据融合（气温、湿度、超声波测距、系统剩余内存）；
- *    4. 【现代工程架构】：FreeRTOS 多核多任务调度 + 统一数据总线与三层解耦设计！
+ * 🎯 学习目标：
+ *    1. 掌握局部显存重绘与防闪烁双缓冲绘制思想；
+ *    2. 实时生成平滑正弦波 (Sine Wave) 动态折线示波器；
+ *    3. 动态渲染色彩呼吸进度条与 FPS 帧率实时监测。
  */
 
 #include <stdio.h>
-#include <string.h>
-#include <time.h>
-#include <sys/time.h>
+#include <stdlib.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/queue.h"
-#include "esp_system.h"
-#include "esp_wifi.h"
-#include "esp_event.h"
-#include "esp_log.h"
-#include "nvs_flash.h"
-#include "esp_netif.h"
-#include "esp_sntp.h"
-#include "mqtt_client.h"
 #include "driver/gpio.h"
+#include "driver/spi_master.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_vendor.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_heap_caps.h"
 
-static const char *TAG = "FINAL_SMART_HUB";
+static const char *TAG = "EXP3_DASHBOARD";
 
-#define LED2_PIN     GPIO_NUM_27
-#define BUTTON_PIN   GPIO_NUM_39
+#define LCD_HOST                SPI2_HOST
+#define LCD_PIXEL_CLOCK_HZ      (40 * 1000 * 1000)
+#define LCD_PIN_MOSI            GPIO_NUM_19
+#define LCD_PIN_SCLK            GPIO_NUM_18
+#define LCD_PIN_CS              GPIO_NUM_5
+#define LCD_PIN_DC              GPIO_NUM_17
+#define LCD_PIN_RST             GPIO_NUM_21
+#define LCD_PIN_BACKLIGHT       GPIO_NUM_26
 
-#define WIFI_SSID    "ESP32_SMART_HUB"
-#define WIFI_PASS    "12345678"
-#define MQTT_BROKER  "mqtt://broker.emqx.io:1883"
+#define LCD_H_RES               240
+#define LCD_V_RES               280
+#define LCD_GAP_X               0
+#define LCD_GAP_Y               20
 
-typedef struct {
-    float temperature;
-    float humidity;
-    float distance_cm;
-    uint32_t free_heap_kb;
-    char time_str[32];
-} smart_hub_state_t;
+#define COLOR_BLACK             0x0000
+#define COLOR_WHITE             0xFFFF
+#define COLOR_RED               0x00F8
+#define COLOR_GREEN             0xE007
+#define COLOR_BLUE              0x1F00
+#define COLOR_YELLOW            0xE0FF
+#define COLOR_CYAN              0xFF07
+#define COLOR_BG                0x1010
+#define COLOR_CARD_BG           0x2018
 
-static smart_hub_state_t s_hub_state = {
-    .temperature = 25.0f,
-    .humidity = 60.0f,
-    .distance_cm = 20.0f,
-    .free_heap_kb = 0,
-    .time_str = "2026-08-21 12:00:00"
-};
+static esp_lcd_panel_handle_t s_panel = NULL;
+static uint16_t *s_line_buffer = NULL;  // 常驻 480 字节 DMA 行显存 (供 fill_rect 绘制静态卡片与进度条)
+static uint16_t *s_wave_canvas = NULL;  // 常驻 40 KB DMA 波形画布 (供示波器每秒 50 帧无损超高速推屏)
 
-static esp_mqtt_client_handle_t s_mqtt_client = NULL;
-static bool s_wifi_connected = false;
-static bool s_mqtt_connected = false;
+/* 动态波形画布区域 (宽 200, 高 100) */
+#define WAVE_W 200
+#define WAVE_H 100
+#define WAVE_X 20
+#define WAVE_Y 140
 
-/* ====================================================================
- * ⏰ 1. SNTP 网络授时模块
- * ==================================================================== */
-static void init_sntp_time(void)
+static void lcd_init(void)
 {
-    ESP_LOGI(TAG, "⏰ 正在初始化 SNTP 网络自动对时服务...");
-    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "ntp.aliyun.com");
-    esp_sntp_setservername(1, "cn.pool.ntp.org");
-    esp_sntp_init();
+    gpio_config_t bl = { .pin_bit_mask = (1ULL << LCD_PIN_BACKLIGHT), .mode = GPIO_MODE_OUTPUT };
+    gpio_config(&bl);
+    gpio_set_level(LCD_PIN_BACKLIGHT, 1);
 
-    // 设置中国标准时间 (UTC+8)
-    setenv("TZ", "CST-8", 1);
-    tzset();
+    spi_bus_config_t buscfg = {
+        .sclk_io_num = LCD_PIN_SCLK,
+        .mosi_io_num = LCD_PIN_MOSI,
+        .miso_io_num = GPIO_NUM_NC,
+        .quadwp_io_num = GPIO_NUM_NC,
+        .quadhd_io_num = GPIO_NUM_NC,
+        .max_transfer_sz = WAVE_W * WAVE_H * sizeof(uint16_t),
+    };
+    ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
+
+    esp_lcd_panel_io_handle_t io = NULL;
+    esp_lcd_panel_io_spi_config_t io_cfg = {
+        .dc_gpio_num = LCD_PIN_DC,
+        .cs_gpio_num = LCD_PIN_CS,
+        .pclk_hz = LCD_PIXEL_CLOCK_HZ,
+        .lcd_cmd_bits = 8,
+        .lcd_param_bits = 8,
+        .spi_mode = 0,
+        .trans_queue_depth = 10,
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io));
+
+    esp_lcd_panel_dev_config_t p_cfg = {
+        .reset_gpio_num = LCD_PIN_RST,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel = 16,
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io, &p_cfg, &s_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false)); // 适配开发板屏幕排线方向
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
+
+    // 开机一次性分配常驻 DMA 显存 (0 动态内存碎片，0 异步时序竞争)
+    s_line_buffer = heap_caps_malloc(LCD_H_RES * sizeof(uint16_t), MALLOC_CAP_DMA);
+    s_wave_canvas = heap_caps_malloc(WAVE_W * WAVE_H * sizeof(uint16_t), MALLOC_CAP_DMA);
 }
 
-static void update_current_time_str(char *out_str, size_t max_len)
+/* 填充矩形区域 (使用常驻行显存逐行推屏，绝无毛刺花边) */
+static void fill_rect(int x, int y, int w, int h, uint16_t color)
 {
-    time_t now;
-    struct tm timeinfo;
-    time(&now);
-    localtime_r(&now, &timeinfo);
-    strftime(out_str, max_len, "%Y-%m-%d %H:%M:%S", &timeinfo);
-}
+    if (x >= LCD_H_RES || y >= LCD_V_RES || w <= 0 || h <= 0) return;
+    if (x + w > LCD_H_RES) w = LCD_H_RES - x;
+    if (y + h > LCD_V_RES) h = LCD_V_RES - y;
 
-/* ====================================================================
- * ☁️ 2. MQTT 物联网通信模块
- * ==================================================================== */
-static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
-{
-    esp_mqtt_event_handle_t event = event_data;
-    switch ((esp_mqtt_event_id_t)event_id) {
-        case MQTT_EVENT_CONNECTED:
-            s_mqtt_connected = true;
-            ESP_LOGI(TAG, "🟢 [MQTT 云平台] 已成功连接到云端 Broker！");
-            esp_mqtt_client_subscribe(s_mqtt_client, "esp32/smart_hub/control", 1);
-            break;
-        case MQTT_EVENT_DATA:
-            ESP_LOGI(TAG, "📩 [MQTT 下行控制] 收到指令: %.*s", event->data_len, event->data);
-            if (strncmp(event->data, "LED_ON", event->data_len) == 0) {
-                gpio_set_level(LED2_PIN, 1);
-            } else if (strncmp(event->data, "LED_OFF", event->data_len) == 0) {
-                gpio_set_level(LED2_PIN, 0);
-            }
-            break;
-        case MQTT_EVENT_DISCONNECTED:
-            s_mqtt_connected = false;
-            ESP_LOGW(TAG, "🔴 [MQTT 云平台] 连接断开！");
-            break;
-        default:
-            break;
+    for (int i = 0; i < w; i++) {
+        s_line_buffer[i] = color;
+    }
+
+    for (int row = y; row < y + h; row++) {
+        esp_lcd_panel_draw_bitmap(s_panel, x, row, x + w, row + 1, s_line_buffer);
     }
 }
 
-static void start_mqtt_client(void)
+/* 全屏纯色清屏 */
+static void fill_screen(uint16_t color)
 {
-    esp_mqtt_client_config_t mqtt_cfg = {
-        .broker.address.uri = MQTT_BROKER,
-    };
-    s_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
-    esp_mqtt_client_register_event(s_mqtt_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
-    esp_mqtt_client_start(s_mqtt_client);
+    fill_rect(0, 0, LCD_H_RES, LCD_V_RES, color);
 }
 
-/* ====================================================================
- * 📶 3. Wi-Fi 连接管理模块
- * ==================================================================== */
-static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
+/* 绘制平滑动态示波器波形 (常驻画布，极速 DMA 推屏) */
+static void draw_waveform_frame(float phase)
 {
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        s_wifi_connected = true;
-        ESP_LOGI(TAG, "🎉 [Wi-Fi 联网成功] 已获取 IP 地址，启动授时与 MQTT 连接！");
-        init_sntp_time();
-        start_mqtt_client();
+    if (!s_wave_canvas) return;
+
+    // 1. 清空画布背景为纯黑
+    for (int i = 0; i < WAVE_W * WAVE_H; i++) {
+        s_wave_canvas[i] = COLOR_BLACK;
     }
-}
 
-static void init_wifi(void)
-{
-    esp_netif_create_default_wifi_sta();
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_wifi_init(&cfg);
-
-    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL);
-    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL);
-
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = WIFI_SSID,
-            .password = WIFI_PASS,
-        },
-    };
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
-    esp_wifi_start();
-}
-
-/* ====================================================================
- * 📊 4. 传感器采集与云端数据上报核心任务
- * ==================================================================== */
-static void hub_telemetry_task(void *pvParameters)
-{
-    char json_payload[256];
-    int cycle = 0;
-
-    while (1) {
-        cycle++;
-        s_hub_state.temperature = 25.0f + (float)(cycle % 8) * 0.4f;
-        s_hub_state.humidity = 55.0f + (float)(cycle % 12);
-        s_hub_state.distance_cm = 18.0f + (float)(cycle % 15);
-        s_hub_state.free_heap_kb = esp_get_free_heap_size() / 1024;
-        update_current_time_str(s_hub_state.time_str, sizeof(s_hub_state.time_str));
-
-        ESP_LOGI(TAG, "--------------------------------------------------");
-        ESP_LOGI(TAG, "⏰ 【智能中控看板】 当前时间: %s", s_hub_state.time_str);
-        ESP_LOGI(TAG, "🌡️ 室内环境: 气温 \033[36m%.1f°C\033[0m | 湿度 \033[36m%.1f%%\033[0m | 雷达: \033[33m%.1fcm\033[0m",
-                 s_hub_state.temperature, s_hub_state.humidity, s_hub_state.distance_cm);
-        ESP_LOGI(TAG, "💻 系统资源: 剩余内存 %lu KB | Wi-Fi: %s | MQTT: %s",
-                 s_hub_state.free_heap_kb, s_wifi_connected ? "已连接" : "未连接", s_mqtt_connected ? "在线" : "离线");
-        ESP_LOGI(TAG, "--------------------------------------------------");
-
-        if (s_mqtt_connected) {
-            snprintf(json_payload, sizeof(json_payload),
-                     "{\"time\":\"%s\",\"temp\":%.1f,\"humi\":%.1f,\"dist\":%.1f,\"heap\":%lu}",
-                     s_hub_state.time_str, s_hub_state.temperature, s_hub_state.humidity,
-                     s_hub_state.distance_cm, s_hub_state.free_heap_kb);
-
-            esp_mqtt_client_publish(s_mqtt_client, "esp32/smart_hub/telemetry", json_payload, 0, 1, 0);
-            ESP_LOGI(TAG, "🚀 [MQTT 遥测上报] 数据已发送至阿里云 IoT: %s", json_payload);
+    // 2. 绘制暗灰网格 (纵向 + 横向中心虚线)
+    for (int x = 0; x < WAVE_W; x += 20) {
+        for (int y = 0; y < WAVE_H; y += 4) {
+            s_wave_canvas[y * WAVE_W + x] = 0x2104;
         }
-
-        vTaskDelay(pdMS_TO_TICKS(3000));
     }
+    for (int x = 0; x < WAVE_W; x += 4) {
+        s_wave_canvas[(WAVE_H / 2) * WAVE_W + x] = 0x2104;
+    }
+
+    // 3. 计算并绘制平滑正弦波 (青色波形，加粗 1 像素)
+    for (int x = 0; x < WAVE_W; x++) {
+        float angle = (float)x * 0.08f + phase;
+        int y = (int)(sinf(angle) * 35.0f) + (WAVE_H / 2);
+        if (y >= 0 && y < WAVE_H) {
+            s_wave_canvas[y * WAVE_W + x] = COLOR_CYAN;
+            if (y + 1 < WAVE_H) s_wave_canvas[(y + 1) * WAVE_W + x] = COLOR_CYAN;
+        }
+    }
+
+    // 4. 局部极速 DMA 推屏
+    esp_lcd_panel_draw_bitmap(s_panel, WAVE_X, WAVE_Y, WAVE_X + WAVE_W, WAVE_Y + WAVE_H, s_wave_canvas);
 }
 
 void app_main(void)
 {
     ESP_LOGI(TAG, "==================================================");
-    ESP_LOGI(TAG, "   🏆 关卡 18 终极大实战：桌面多功能智能中控台     ");
+    ESP_LOGI(TAG, "   🚀 关卡 10 实验 3：ST7789 动态波形与高帧率示波器 ");
     ESP_LOGI(TAG, "==================================================");
 
-    // 1. 初始化 NVS
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
+    lcd_init();
+
+    // 1. 绘制静态深色大背景 (全屏清屏)
+    fill_screen(COLOR_BG);
+
+    // 2. 绘制顶部信息卡片
+    fill_rect(15, 15, 210, 45, COLOR_CARD_BG);
+    fill_rect(20, 20, 6, 35, COLOR_GREEN); // 运行状态指示条
+
+    // 3. 绘制进度条边框卡片
+    fill_rect(15, 70, 210, 50, COLOR_CARD_BG);
+
+    float phase = 0.0f;
+    int progress = 0;
+    int frame_count = 0;
+    int64_t last_time = esp_timer_get_time();
+
+    while (1) {
+        // 刷新动态波形
+        draw_waveform_frame(phase);
+        phase += 0.15f;
+
+        // 刷新动态进度条 (宽 180, 高 12)
+        progress = (progress + 2) % 180;
+        fill_rect(30, 95, progress, 12, COLOR_YELLOW);
+        fill_rect(30 + progress, 95, 180 - progress, 12, COLOR_BLACK);
+
+        frame_count++;
+        int64_t now = esp_timer_get_time();
+        if (now - last_time >= 1000000) { // 每秒统计一次 FPS
+            float fps = (float)frame_count * 1000000.0f / (float)(now - last_time);
+            ESP_LOGI(TAG, "📈 [LCD 渲染性能] 实时刷新帧率: \033[32m%5.1f FPS\033[0m (DMA 硬件加速中)", fps);
+            frame_count = 0;
+            last_time = now;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20)); // 约 50 FPS
     }
-    ESP_ERROR_CHECK(ret);
-
-    // 2. 初始化网络事件总线
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    // 3. 配置板载硬件指示灯
-    gpio_config_t led_cfg = {
-        .pin_bit_mask = (1ULL << LED2_PIN),
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    gpio_config(&led_cfg);
-
-    // 4. 启动 Wi-Fi
-    init_wifi();
-
-    // 5. 启动中控遥测与融合任务
-    xTaskCreatePinnedToCore(hub_telemetry_task, "hub_telemetry", 4096, NULL, 5, NULL, 0);
 }
