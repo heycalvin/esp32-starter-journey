@@ -117,19 +117,33 @@ static void handle_downlink_command(const char *payload, int len)
     cJSON *root = cJSON_Parse(json_buf);
     if (!root) {
         ESP_LOGE(TAG, "❌ JSON 格式错误");
+        send_ack_response("unknown", false, "JSON 语法解析错误");
         return;
     }
 
     cJSON *cmd = cJSON_GetObjectItem(root, "cmd");
-    if (cmd && cmd->valuestring) {
+    if (cmd && cJSON_IsString(cmd)) {
         if (strcmp(cmd->valuestring, "set_led") == 0) {
             cJSON *state = cJSON_GetObjectItem(root, "state");
             if (state) {
-                s_led_status = (state->valueint != 0);
+                if (cJSON_IsBool(state)) {
+                    s_led_status = cJSON_IsTrue(state);
+                } else if (cJSON_IsNumber(state)) {
+                    s_led_status = (state->valueint != 0);
+                } else if (cJSON_IsString(state)) {
+                    s_led_status = (strcasecmp(state->valuestring, "on") == 0 || strcmp(state->valuestring, "1") == 0);
+                }
                 gpio_set_level(LED2_PIN, s_led_status ? 1 : 0);
                 ESP_LOGI(TAG, "💡 成功执行开关灯 ➔ %s", s_led_status ? "点亮 (ON)" : "熄灭 (OFF)");
                 send_ack_response("set_led", true, s_led_status ? "LED Turned ON" : "LED Turned OFF");
+            } else {
+                send_ack_response("set_led", false, "Missing 'state' field (0/1/true/false)");
             }
+        } else if (strcmp(cmd->valuestring, "get_status") == 0) {
+            char status_msg[128];
+            snprintf(status_msg, sizeof(status_msg), "LED is %s, Heap: %lu KB", 
+                     s_led_status ? "ON" : "OFF", (unsigned long)(esp_get_free_heap_size() / 1024));
+            send_ack_response("get_status", true, status_msg);
         } else if (strcmp(cmd->valuestring, "reboot") == 0) {
             send_ack_response("reboot", true, "System will reboot in 1s");
             vTaskDelay(pdMS_TO_TICKS(1000));
@@ -137,6 +151,8 @@ static void handle_downlink_command(const char *payload, int len)
         } else {
             send_ack_response(cmd->valuestring, false, "Unknown Command");
         }
+    } else {
+        send_ack_response("unknown", false, "Missing 'cmd' string field");
     }
 
     cJSON_Delete(root);
