@@ -11,7 +11,10 @@ esp_err_t srv_sentry_power_init(void)
         .idle_core_mask = 0,
         .trigger_panic = true,
     };
-    esp_task_wdt_init(&twdt_config);
+    esp_err_t ret = esp_task_wdt_init(&twdt_config);
+    if (ret == ESP_ERR_INVALID_STATE) {
+        esp_task_wdt_reconfigure(&twdt_config);
+    }
     esp_task_wdt_add(NULL);
     ESP_LOGI(TAG, "🛡️ 电源与看门狗哨兵已就绪 (8秒看门狗)");
     return ESP_OK;
