@@ -1,6 +1,6 @@
-# 第 16 关：ESP32 低功耗电源管理与 Deep-sleep 深度睡眠唤醒 (电池省电技术)
+# 第 19 关：ESP32 低功耗电源管理与 Deep-sleep 深度睡眠唤醒 (电池省电技术)
 
-![第16关封面插画](../docs/images/esp32_level16_cover.jpg)
+![第19关封面插画](../docs/images/esp32_level19_cover.jpg)
 
 ---
 
@@ -21,7 +21,7 @@
 
 ---
 
-## 16.1 什么是 Deep-sleep？为什么能省电上万倍？
+## 19.1 什么是 Deep-sleep？为什么能省电上万倍？
 
 ```text
  ┌─────────────────────────────────────────────────────────────┐
@@ -40,7 +40,7 @@
 
 ---
 
-## 16.2 睡醒了怎么记住数据？`RTC_DATA_ATTR` 慢速 RAM
+## 19.2 睡醒了怎么记住数据？`RTC_DATA_ATTR` 慢速 RAM
 
 很多小白疑惑：**“单片机进入 Deep-sleep 后系统 RAM 断电了，普通变量全被清空了，它怎么知道自己一共被唤醒了几次？”**
 
@@ -55,47 +55,35 @@ static RTC_DATA_ATTR int s_boot_count = 0;
 
 ---
 
-## 16.3 外部唤醒源大白话：EXT0（按键）与 EXT1（红外）
+## 19.3 外部唤醒源大白话：EXT0（按键）与 EXT1（红外）
 
 ```text
  ┌─────────────────────────────────────────────────────────────┐
- │                【EXT0 唤醒 VS EXT1 唤醒】                   │
+ │                  【两大外部硬件电平唤醒源】                 │
  │                                                             │
- │  1. EXT0 (单个 RTC 引脚唤醒) ➔ 相当于【大门口的专用门铃】   │
- │     - 监听单个 RTC GPIO（如 SW3 按键 GPIO39）；             │
- │     - 只要检测到低电平 0（按键被按下），芯片瞬间被叫醒！    │
+ │  1. EXT0（单引脚电平唤醒）：                                │
+ │     - 监听单个 RTC GPIO 引脚（如 SW3 按键 GPIO39）；        │
+ │     - 当引脚电平变为 0（按下）时瞬间唤醒 CPU。              │
  │                                                             │
- │  2. EXT1 (多个 RTC 引脚组唤醒) ➔ 相当于【全屋红外防盗网】   │
- │     - 可以同时监听多个 RTC GPIO（用位掩码 Mask 组合）；     │
- │     - 只要 SR602 人体红外感应到高电平 1，芯片瞬间被叫醒！   │
+ │  2. EXT1（多引脚位掩码唤醒）：                              │
+ │     - 监听一组 RTC GPIO 引脚（如 SR602 人体红外 GPIO34）；  │
+ │     - 当任何一个引脚变为高电平（感应到有人走过）时唤醒 CPU。│
  └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 16.4 📚 核心库函数功能字典与关键参数解密（小白必读）
+## 19.4 📚 核心库函数功能字典（小白必读）
 
----
-
-### 1. 🛠️ 本章引入的核心头文件
-
-| 头文件 | 作用说明 | 核心函数 / 宏 |
-| :--- | :--- | :--- |
-| **`"esp_sleep.h"`** | **电源管理与 Deep-sleep 启停控制** | `esp_sleep_enable_timer_wakeup()`、`esp_sleep_enable_ext0_wakeup()`、`esp_deep_sleep_start()` |
-
----
-
-### 2. 🎛️ 常用唤醒函数速查
-
-* **① 闹钟定时器唤醒**：
+* **① 配置定时器休眠唤醒时间**：
   ```c
-  esp_sleep_enable_timer_wakeup(5 * 1000 * 1000); // 5 秒后唤醒 (单位: 微秒)
+  esp_sleep_enable_timer_wakeup(5 * 1000 * 1000); // 5秒后唤醒 (单位: 微秒 μs)
   ```
-* **② 按键 EXT0 唤醒**：
+* **② 配置 EXT0 按键唤醒**：
   ```c
   esp_sleep_enable_ext0_wakeup(GPIO_NUM_39, 0); // GPIO39 变低电平 0 时唤醒
   ```
-* **③ 人体红外 EXT1 唤醒**：
+* **③ 配置 EXT1 红外感应唤醒**：
   ```c
   esp_sleep_enable_ext1_wakeup(1ULL << GPIO_NUM_34, ESP_EXT1_WAKEUP_ANY_HIGH); // GPIO34 变高电平 1 时唤醒
   ```
@@ -110,8 +98,12 @@ static RTC_DATA_ATTR int s_boot_count = 0;
 
 配置 5 秒定时器休眠，每次睡醒自增 RTC 计数器：
 
-> 📁 **配套源码文件**：[`code/16_low_power_deepsleep/01_timer_wakeup.c`](../code/16_low_power_deepsleep/01_timer_wakeup.c)  
-> ⚡ **一键切换运行**：在终端运行 `./switch_code.sh 16 1 --flash` 即可秒级切换并自动烧录！
+## 19.5 实战第 1 步：Timer 定时器深度睡眠与 RTC 数据保持
+
+配置 5 秒定时器休眠，每次睡醒自增 RTC 计数器：
+
+> 📁 **配套源码文件**：[`code/19_low_power_deepsleep/01_timer_wakeup.c`](../code/19_low_power_deepsleep/01_timer_wakeup.c)  
+> ⚡ **一键切换运行**：在终端运行 `./switch_code.sh 19 1 --flash` 即可秒级切换并自动烧录！
 
 ```c
 static RTC_DATA_ATTR int s_boot_count = 0;
@@ -130,12 +122,12 @@ void app_main(void)
 
 ---
 
-## 16.6 实战第 2 步：EXT0 / EXT1 外部按键与红外传感器硬件唤醒
+## 19.6 实战第 2 步：EXT0 / EXT1 外部按键与红外传感器硬件唤醒
 
 不设定时器，芯片无限期沉睡，直到人工按下 SW3 按键（EXT0）或有人在红外传感器前走过（EXT1）时瞬间被叫醒：
 
-> 📁 **配套源码文件**：[`code/16_low_power_deepsleep/02_ext0_ext1_wakeup.c`](../code/16_low_power_deepsleep/02_ext0_ext1_wakeup.c)  
-> ⚡ **一键切换运行**：在终端运行 `./switch_code.sh 16 2 --flash` 即可秒级切换并自动烧录！
+> 📁 **配套源码文件**：[`code/19_low_power_deepsleep/02_ext0_ext1_wakeup.c`](../code/19_low_power_deepsleep/02_ext0_ext1_wakeup.c)  
+> ⚡ **一键切换运行**：在终端运行 `./switch_code.sh 19 2 --flash` 即可秒级切换并自动烧录！
 
 ```c
 // 1. 配置按键唤醒 (EXT0)
@@ -150,19 +142,19 @@ esp_deep_sleep_start();
 
 ---
 
-## 16.7 实战第 3 步：综合大工程 —— 低功耗环境监测哨兵与自动睡眠巡航
+## 19.7 实战第 3 步：综合大工程 —— 低功耗环境监测哨兵与自动睡眠巡航
 
 模拟电池供电的野外哨兵系统：
 1. 平时深度沉睡（微安级功耗）；
 2. 每隔 10 秒定时醒来巡检一次，闪烁 LED2 并记录温度；
 3. 如果中途有人按下按键，立刻触发紧急中断提前唤醒！
 
-> 📁 **配套源码文件**：[`code/16_low_power_deepsleep/03_low_power_sentry.c`](../code/16_low_power_deepsleep/03_low_power_sentry.c)  
-> ⚡ **一键切换运行**：在终端运行 `./switch_code.sh 16 3 --flash` 即可秒级切换并自动烧录！
+> 📁 **配套源码文件**：[`code/19_low_power_deepsleep/03_low_power_sentry.c`](../code/19_low_power_deepsleep/03_low_power_sentry.c)  
+> ⚡ **一键切换运行**：在终端运行 `./switch_code.sh 19 3 --flash` 即可秒级切换并自动烧录！
 
 ---
 
-## 16.8 关卡总结与通关打卡
+## 19.8 关卡总结与通关打卡
 
 太震撼了！你已经攻克了电池供电设备最核心的命脉技术 —— **微安级深度休眠与硬件唤醒**！
 
@@ -177,5 +169,5 @@ esp_deep_sleep_start();
 现在，你已经掌握了 ESP32 所有的外设驱动与通信技术。  
 但如果你把几千行代码全揉在一个 `app_main.c` 里，代码就会变成一团无法维护的“意大利面条”。
 
-在下一关，我们将学习**大厂资深工程师的核心功底 —— 嵌入式软件工程化与三层分层解耦架构**！  
-请翻开 [**第 17 章：嵌入式软件工程化 —— 驱动/业务分层、事件总线与组件化模块设计**](./17_嵌入式软件工程与模块化分层架构.md)！
+在下一关，我们将学习**大厂资深工程师的核心功底 —— 嵌入式软件工程化、看门狗与崩溃诊断**！  
+请翻开 [**第 20 章：嵌入式软件工程化 —— 驱动分层、事件总线、看门狗(WDT)与崩溃诊断**](./20_嵌入式软件工程与模块化分层架构.md)！
