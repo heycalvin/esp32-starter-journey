@@ -1,197 +1,77 @@
 /**
- * 🌟 ESP32 物联网实战 —— 第 13 关 实验 3：手机远程控制中枢与双向联动 (终极综合)
+ * 🌟 ESP32 物联网实战 —— 第 14 关 实验 1：BLE 低功耗蓝牙广播与手机扫描发现 (BLE Beacon)
  * 
  * 🎯 学习目标：
- *    1. 搭建双向通信闭环：手机下发控制指令 ➔ ESP32 执行并立即回传 ACK 确认报文；
- *    2. 解析 JSON 控制指令（支持 `set_led`、`reboot`、`get_status`）；
- *    3. 配合 MQTTX 桌面调试端或手机 MQTT App 实现真正的“全球远程遥控物联网中枢”！
- * 
- * 📌 硬件接口：
- *    - 板载绿色 LED2: GPIO27
+ *    1. 搞懂 BLE（低功耗蓝牙）与经典蓝牙（Classic BT）的区别与超低功耗优势；
+ *    2. 掌握 ESP32 蓝牙控制器（BT Controller）与 Bluedroid 协议栈初始化流程；
+ *    3. 配置 GAP（通用访问协议）广播参数与广播名，让手机蓝牙 App 秒级发现！
  */
 
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/event_groups.h"
-#include "driver/gpio.h"
 #include "esp_system.h"
-#include "esp_wifi.h"
-#include "esp_event.h"
 #include "esp_log.h"
-#include "esp_netif.h"
-#include "mqtt_client.h"
-#include "cJSON.h"
 #include "nvs_flash.h"
 
-static const char *TAG = "EXP3_MQTT_HUB";
+#include "esp_bt.h"
+#include "esp_gap_ble_api.h"
+#include "esp_bt_main.h"
 
-#define LED2_PIN               GPIO_NUM_27
+static const char *TAG = "EXP1_BLE_ADV";
 
-#define EXAMPLE_WIFI_SSID      "CalvinHome"
-#define EXAMPLE_WIFI_PASS      "lq8841149XT"
+#define DEVICE_NAME "ESP32-Journey-Beacon"
 
-#define MQTT_BROKER_URI        "mqtt://broker.emqx.io:1883"
-#define TOPIC_CMD              "esp32_journey/device_01/command"
-#define TOPIC_ACK              "esp32_journey/device_01/ack"
-#define TOPIC_STATUS           "esp32_journey/device_01/status"
+static esp_ble_adv_params_t adv_params = {
+    .adv_int_min        = 0x20, // 广播最小间隔 (20ms * 0.625ms = 12.5ms)
+    .adv_int_max        = 0x40, // 广播最大间隔 (40ms * 0.625ms = 25ms)
+    .adv_type           = ADV_TYPE_IND,
+    .own_addr_type      = BLE_ADDR_TYPE_PUBLIC,
+    .channel_map        = ADV_CHNL_ALL,
+    .adv_filter_policy  = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+};
 
-#define WIFI_CONNECTED_BIT BIT0
-static EventGroupHandle_t s_wifi_event_group;
-static esp_mqtt_client_handle_t s_mqtt_client = NULL;
-static bool s_led_status = false;
+static esp_ble_adv_data_t adv_data = {
+    .set_scan_rsp        = false,
+    .include_name        = true,
+    .include_txpower     = true,
+    .min_interval        = 0x0006,
+    .max_interval        = 0x0010,
+    .appearance          = 0x00,
+    .manufacturer_len    = 0,
+    .p_manufacturer_data = NULL,
+    .service_data_len    = 0,
+    .p_service_data      = NULL,
+    .service_uuid_len    = 0,
+    .p_service_uuid      = NULL,
+    .flag                = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
+};
 
-static void hardware_init(void)
+static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
 {
-    gpio_config_t led_conf = {
-        .pin_bit_mask = (1ULL << LED2_PIN),
-        .mode = GPIO_MODE_OUTPUT,
-    };
-    gpio_config(&led_conf);
-    gpio_set_level(LED2_PIN, 0);
-}
-
-static void wifi_event_handler(void* arg, esp_event_base_t event_base,
-                               int32_t event_id, void* event_data)
-{
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        esp_wifi_connect();
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-    }
-}
-
-static void wifi_init(void)
-{
-    s_wifi_event_group = xEventGroupCreate();
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
-
-    wifi_config_t wifi_config = {
-        .sta = { .ssid = EXAMPLE_WIFI_SSID, .password = EXAMPLE_WIFI_PASS },
-    };
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, portMAX_DELAY);
-    ESP_LOGI(TAG, "✅ Wi-Fi 已连接！");
-}
-
-/* 回复 ACK 确认报文给手机端 */
-static void send_ack_response(const char *cmd_name, bool success, const char *msg)
-{
-    cJSON *ack = cJSON_CreateObject();
-    cJSON_AddStringToObject(ack, "cmd", cmd_name);
-    cJSON_AddBoolToObject(ack, "success", success);
-    cJSON_AddStringToObject(ack, "message", msg);
-    cJSON_AddBoolToObject(ack, "led_state", s_led_status);
-
-    char *json_str = cJSON_PrintUnformatted(ack);
-    esp_mqtt_client_publish(s_mqtt_client, TOPIC_ACK, json_str, 0, 1, 0);
-    ESP_LOGI(TAG, "📤 [回传 ACK ➔ 手机] %s", json_str);
-
-    free(json_str);
-    cJSON_Delete(ack);
-}
-
-/* 解析并执行下行控制指令 */
-static void handle_downlink_command(const char *payload, int len)
-{
-    char json_buf[512] = {0};
-    if (len >= sizeof(json_buf)) len = sizeof(json_buf) - 1;
-    strncpy(json_buf, payload, len);
-
-    ESP_LOGI(TAG, "📥 [收到云端控制指令] %s", json_buf);
-
-    cJSON *root = cJSON_Parse(json_buf);
-    if (!root) {
-        ESP_LOGE(TAG, "❌ JSON 格式错误");
-        send_ack_response("unknown", false, "JSON 语法解析错误");
-        return;
-    }
-
-    cJSON *cmd = cJSON_GetObjectItem(root, "cmd");
-    if (cmd && cJSON_IsString(cmd)) {
-        if (strcmp(cmd->valuestring, "set_led") == 0) {
-            cJSON *state = cJSON_GetObjectItem(root, "state");
-            if (state) {
-                if (cJSON_IsBool(state)) {
-                    s_led_status = cJSON_IsTrue(state);
-                } else if (cJSON_IsNumber(state)) {
-                    s_led_status = (state->valueint != 0);
-                } else if (cJSON_IsString(state)) {
-                    s_led_status = (strcasecmp(state->valuestring, "on") == 0 || strcmp(state->valuestring, "1") == 0);
-                }
-                gpio_set_level(LED2_PIN, s_led_status ? 1 : 0);
-                ESP_LOGI(TAG, "💡 成功执行开关灯 ➔ %s", s_led_status ? "点亮 (ON)" : "熄灭 (OFF)");
-                send_ack_response("set_led", true, s_led_status ? "LED Turned ON" : "LED Turned OFF");
-            } else {
-                send_ack_response("set_led", false, "Missing 'state' field (0/1/true/false)");
-            }
-        } else if (strcmp(cmd->valuestring, "get_status") == 0) {
-            char status_msg[128];
-            snprintf(status_msg, sizeof(status_msg), "LED is %s, Heap: %lu KB", 
-                     s_led_status ? "ON" : "OFF", (unsigned long)(esp_get_free_heap_size() / 1024));
-            send_ack_response("get_status", true, status_msg);
-        } else if (strcmp(cmd->valuestring, "reboot") == 0) {
-            send_ack_response("reboot", true, "System will reboot in 1s");
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            esp_restart();
-        } else {
-            send_ack_response(cmd->valuestring, false, "Unknown Command");
-        }
-    } else {
-        send_ack_response("unknown", false, "Missing 'cmd' string field");
-    }
-
-    cJSON_Delete(root);
-}
-
-static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
-{
-    esp_mqtt_event_handle_t event = event_data;
-    switch ((esp_mqtt_event_id_t)event_id) {
-        case MQTT_EVENT_CONNECTED:
-            ESP_LOGI(TAG, "🎉 MQTT 连接就绪，正在订阅控制主题: %s", TOPIC_CMD);
-            esp_mqtt_client_subscribe(s_mqtt_client, TOPIC_CMD, 1);
-            send_ack_response("online_init", true, "ESP32 Ready for Commands");
+    switch (event) {
+        case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
+            ESP_LOGI(TAG, "📡 广播数据设置完成，正在启动 BLE 广播...");
+            esp_ble_gap_start_advertising(&adv_params);
             break;
-        case MQTT_EVENT_DATA:
-            handle_downlink_command(event->data, event->data_len);
+        case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
+            if (param->adv_start_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+                ESP_LOGI(TAG, "🎉 [BLE 广播中] 请打开手机微信小程序或 LightBlue App 搜索: \033[32m%s\033[0m", DEVICE_NAME);
+            } else {
+                ESP_LOGE(TAG, "❌ BLE 广播启动失败, 错误码: %d", param->adv_start_cmpl.status);
+            }
             break;
         default:
             break;
     }
 }
 
-static void mqtt_app_start(void)
-{
-    esp_mqtt_client_config_t mqtt_cfg = {
-        .broker.address.uri = MQTT_BROKER_URI,
-    };
-    s_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
-    esp_mqtt_client_register_event(s_mqtt_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
-    esp_mqtt_client_start(s_mqtt_client);
-}
-
 void app_main(void)
 {
     ESP_LOGI(TAG, "==================================================");
-    ESP_LOGI(TAG, "   🚀 关卡 13 实验 3：手机远程控制中枢综合工程     ");
+    ESP_LOGI(TAG, "   🚀 关卡 14 实验 1：BLE 广播与手机扫描发现       ");
     ESP_LOGI(TAG, "==================================================");
-
-    hardware_init();
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -200,10 +80,20 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    wifi_init();
-    mqtt_app_start();
+    ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
+
+    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_bt_controller_init(&bt_cfg));
+    ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_BLE));
+
+    ESP_ERROR_CHECK(esp_bluedroid_init());
+    ESP_ERROR_CHECK(esp_bluedroid_enable());
+
+    ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_event_handler));
+    ESP_ERROR_CHECK(esp_ble_gap_set_device_name(DEVICE_NAME));
+    ESP_ERROR_CHECK(esp_ble_gap_config_adv_data(&adv_data));
 
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }

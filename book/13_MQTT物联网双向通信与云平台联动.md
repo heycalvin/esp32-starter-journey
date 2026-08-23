@@ -550,6 +550,6 @@ static void handle_downlink_command(const char *payload, int len)
 
 现在，ESP32 已经具备了连接广域互联网（Wi-Fi + MQTT）的强大能力。但在近场无网络环境（如用手机靠近门锁自动开门、免配网近距离调试设备），**BLE 低功耗蓝牙** 则是不可替代的神器！
 
-请翻开 [**第 14 章：ESP32 BLE 低功耗蓝牙 GATT 广播与手机 App 透传控制**](./14_BLE低功耗蓝牙GATT与手机透传.md)！
+请翻开 [**第 14 章：ESP32 BLE 低功耗蓝牙 GATT 广播与手机 App 透传控制**](./14_BLE低功耗蓝牙GATT与手机App透传控制.md)！
 
 

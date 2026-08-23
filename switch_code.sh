@@ -47,14 +47,17 @@ function list_experiments() {
         "08_i2c_dht11:第 08 关: I2C 通信总线与 DHT11 温湿度"
         "09_nvs_storage:第 09 关: NVS 存储与 Flash 偏好设置"
         "10_st7789_display:第 10 关: ST7789 彩屏与几何图形渲染"
-        "11_lvgl_touch:第 11 关: LVGL 图形框架与电容触摸"
+        "11_lvgl_touch:第 11 关: LVGL 图形框架、电容触摸与字库适配"
         "12_wifi_weather:第 12 关: WiFi 联网与 HTTP 天气时钟"
         "13_mqtt_iot:第 13 关: MQTT 物联网通信与手机远程控制"
         "14_ble_gatt:第 14 关: BLE 蓝牙广播与手机透传遥控"
-        "15_sdcard_fatfs:第 15 关: TF 卡 SDIO 驱动与 FatFS 文件系统"
-        "16_low_power_deepsleep:第 16 关: 低功耗电源管理与 Deep-sleep 休眠"
-        "17_software_architecture:第 17 关: 嵌入式分层架构与事件总线"
-        "18_final_station_hub:第 18 关: 桌面智能气象站与物联网超级中控台"
+        "15_espnow_remote:第 15 关: ESP-NOW 超低延迟私有通信与双机遥控"
+        "16_web_server_portal:第 16 关: Web Server 网页中控与 AP 门户配网"
+        "17_ota_firmware:第 17 关: OTA 空中无线升级与 A/B 分区防变砖"
+        "18_sdcard_fatfs:第 18 关: TF 卡 SDIO 驱动与 FatFS 文件系统"
+        "19_low_power_deepsleep:第 19 关: 低功耗电源管理与 Deep-sleep 休眠"
+        "20_software_architecture:第 20 关: 嵌入式分层架构、事件总线与看门狗"
+        "21_final_station_hub:第 21 关: 桌面智能气象站与物联网超级中控台"
     )
 
     for entry in "${chapters[@]}"; do
