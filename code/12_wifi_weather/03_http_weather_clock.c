@@ -1,8 +1,11 @@
 /**
- * 第 12 关实验 3：HTTP 天气请求、JSON 解析与网络时钟
+ * 🌟 ESP32 物联网实战 —— 第 12 关 实验 3：IP 自动地理定位与动态天气时钟
  *
- * 这个教学示例使用 HTTP 来专注理解“一问一答”和 JSON。真实产品应改用
- * HTTPS 并启用服务器证书校验，不能把明文 HTTP 当作生产方案。
+ * 🎯 学习目标：
+ *    1. 告别固定写死经纬度！实现两段式物联网请求：【IP 定位 ➔ 动态组装天气 URL】；
+ *    2. 第一阶段：向 IP-API 请求自身公网 IP 地理位置，解析出城市名、省份与经纬度（lat/lon）；
+ *    3. 第二阶段：根据获取到的动态经纬度，请求 Open-Meteo 获取当前所在城市的实时天气；
+ *    4. 掌握 cJSON 多级对象与浮点数安全解析、HTTP 事件分块接收与重试机制。
  */
 
 #include <string.h>
@@ -22,24 +25,34 @@
 
 static const char *TAG = "WEATHER_CLOCK";
 
+// 请填写身边的 2.4 GHz Wi-Fi 账号密码
 #define EXAMPLE_WIFI_SSID      "YOUR_WIFI_SSID"
 #define EXAMPLE_WIFI_PASS      "YOUR_WIFI_PASSWORD"
 #define EXAMPLE_WIFI_MAX_RETRY 5
 
-// 北京坐标；逗号编码为 %2C，含义仍是请求三个“当前”天气字段。
-#define WEATHER_API_URL \
-    "http://api.open-meteo.com/v1/forecast?latitude=39.9042&longitude=116.4074" \
-    "&current=temperature_2m%2Cwind_speed_10m%2Cweather_code"
+// 📍 IP 地理位置查询接口 (自动根据请求方公网 IP 返回所在城市与经纬度)
+#define IP_GEO_API_URL         "http://ip-api.com/json/"
 
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAILED_BIT    BIT1
-#define MAX_HTTP_RECV_BUFFER 1024
+#define WIFI_CONNECTED_BIT   BIT0
+#define WIFI_FAILED_BIT      BIT1
+#define MAX_HTTP_RECV_BUFFER 2048
+
+// 地理位置信息结构体
+typedef struct {
+    char city[64];
+    char region[64];
+    char country[64];
+    double lat;
+    double lon;
+    bool valid;
+} geo_location_t;
 
 static EventGroupHandle_t s_wifi_event_group;
-static int s_retry_count;
+static int s_retry_count = 0;
 static char s_response_buffer[MAX_HTTP_RECV_BUFFER];
-static size_t s_buffer_length;
-static bool s_response_too_large;
+static size_t s_buffer_length = 0;
+static bool s_response_too_large = false;
+static geo_location_t s_current_location = { .valid = false };
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
@@ -108,45 +121,131 @@ static void sync_time(void)
     if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(10000)) == ESP_OK) {
         ESP_LOGI(TAG, "网络时间已同步。");
     } else {
-        ESP_LOGW(TAG, "网络授时超时；天气请求仍会继续。 ");
+        ESP_LOGW(TAG, "网络授时超时；天气请求仍会继续。");
     }
 }
 
 static esp_err_t http_event_handler(esp_http_client_event_t *event)
 {
-    if (event->event_id != HTTP_EVENT_ON_DATA || s_response_too_large) {
-        return ESP_OK;
-    }
+    if (event->event_id == HTTP_EVENT_ON_DATA && !s_response_too_large) {
+        size_t free_space = sizeof(s_response_buffer) - s_buffer_length - 1;
+        if ((size_t)event->data_len > free_space) {
+            s_response_too_large = true;
+            ESP_LOGE(TAG, "响应内容过大，超出 %u 字节缓冲区！",
+                     (unsigned int)(sizeof(s_response_buffer) - 1));
+            return ESP_FAIL;
+        }
 
-    size_t free_space = sizeof(s_response_buffer) - s_buffer_length - 1;
-    if ((size_t)event->data_len > free_space) {
-        s_response_too_large = true;
-        ESP_LOGE(TAG, "天气响应超过 %u 字节缓冲区，已放弃本次解析。",
-                 (unsigned int)(sizeof(s_response_buffer) - 1));
-        return ESP_FAIL;
+        memcpy(s_response_buffer + s_buffer_length, event->data, event->data_len);
+        s_buffer_length += event->data_len;
+        s_response_buffer[s_buffer_length] = '\0';
     }
-
-    memcpy(s_response_buffer + s_buffer_length, event->data, event->data_len);
-    s_buffer_length += event->data_len;
-    s_response_buffer[s_buffer_length] = '\0';
     return ESP_OK;
 }
 
 static const char *weather_code_to_text(int weather_code)
 {
     switch (weather_code) {
-        case 0: return "晴朗";
-        case 1: case 2: case 3: return "多云";
-        case 45: case 48: return "有雾";
-        case 51: case 53: case 55: return "毛毛雨";
-        case 61: case 63: case 65: return "下雨";
-        case 71: case 73: case 75: return "下雪";
-        case 80: case 81: case 82: return "阵雨";
-        case 95: return "雷暴";
+        case 0: return "晴朗 ☀️";
+        case 1: case 2: case 3: return "多云 ⛅";
+        case 45: case 48: return "有雾 🌫️";
+        case 51: case 53: case 55: return "毛毛雨 🌦️";
+        case 61: case 63: case 65: return "下雨 🌧️";
+        case 71: case 73: case 75: return "下雪 ❄️";
+        case 80: case 81: case 82: return "阵雨 🌧️";
+        case 95: return "雷暴 ⛈️";
         default: return "其他天气";
     }
 }
 
+/**
+ * 📍 阶段 1：解析 IP 定位返回的 JSON 数据
+ */
+static bool parse_ip_geo_json(const char *json_text)
+{
+    cJSON *root = cJSON_Parse(json_text);
+    if (root == NULL) {
+        ESP_LOGE(TAG, "IP 定位 JSON 解析失败");
+        return false;
+    }
+
+    cJSON *status = cJSON_GetObjectItemCaseSensitive(root, "status");
+    if (!cJSON_IsString(status) || (status->valuestring == NULL) ||
+        (strcmp(status->valuestring, "success") != 0)) {
+        ESP_LOGE(TAG, "IP 定位接口返回状态异常");
+        cJSON_Delete(root);
+        return false;
+    }
+
+    cJSON *city = cJSON_GetObjectItemCaseSensitive(root, "city");
+    cJSON *region = cJSON_GetObjectItemCaseSensitive(root, "regionName");
+    cJSON *country = cJSON_GetObjectItemCaseSensitive(root, "country");
+    cJSON *lat = cJSON_GetObjectItemCaseSensitive(root, "lat");
+    cJSON *lon = cJSON_GetObjectItemCaseSensitive(root, "lon");
+
+    if (!cJSON_IsNumber(lat) || !cJSON_IsNumber(lon)) {
+        ESP_LOGE(TAG, "IP 定位经纬度字段缺失");
+        cJSON_Delete(root);
+        return false;
+    }
+
+    s_current_location.lat = lat->valuedouble;
+    s_current_location.lon = lon->valuedouble;
+    strncpy(s_current_location.city, cJSON_IsString(city) ? city->valuestring : "Unknown", sizeof(s_current_location.city) - 1);
+    strncpy(s_current_location.region, cJSON_IsString(region) ? region->valuestring : "Unknown", sizeof(s_current_location.region) - 1);
+    strncpy(s_current_location.country, cJSON_IsString(country) ? country->valuestring : "Unknown", sizeof(s_current_location.country) - 1);
+    s_current_location.valid = true;
+
+    ESP_LOGI(TAG, "--------------------------------------------------");
+    ESP_LOGI(TAG, "📍 [IP 地理定位成功]");
+    ESP_LOGI(TAG, "   • 所在国家: %s", s_current_location.country);
+    ESP_LOGI(TAG, "   • 省份地区: %s", s_current_location.region);
+    ESP_LOGI(TAG, "   • 当前城市: %s", s_current_location.city);
+    ESP_LOGI(TAG, "   • 经纬坐标: 纬度 %.4f, 经度 %.4f", s_current_location.lat, s_current_location.lon);
+    ESP_LOGI(TAG, "--------------------------------------------------");
+
+    cJSON_Delete(root);
+    return true;
+}
+
+/**
+ * 📍 执行 IP 地理定位查询
+ */
+static bool fetch_ip_location(void)
+{
+    memset(s_response_buffer, 0, sizeof(s_response_buffer));
+    s_buffer_length = 0;
+    s_response_too_large = false;
+
+    esp_http_client_config_t config = {
+        .url = IP_GEO_API_URL,
+        .event_handler = http_event_handler,
+        .timeout_ms = 8000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        ESP_LOGE(TAG, "无法创建 IP 定位客户端");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "🔍 正在通过当前 IP 查询物理地理位置...");
+    esp_err_t err = esp_http_client_perform(client);
+    int status_code = esp_http_client_get_status_code(client);
+    bool success = false;
+
+    if (err == ESP_OK && status_code == 200 && !s_response_too_large) {
+        success = parse_ip_geo_json(s_response_buffer);
+    } else {
+        ESP_LOGE(TAG, "IP 定位请求失败：%s (HTTP %d)", esp_err_to_name(err), status_code);
+    }
+
+    esp_http_client_cleanup(client);
+    return success;
+}
+
+/**
+ * ⛅ 阶段 2：解析天气 JSON 数据
+ */
 static void parse_weather_json(const char *json_text)
 {
     cJSON *root = cJSON_Parse(json_text);
@@ -165,28 +264,52 @@ static void parse_weather_json(const char *json_text)
 
     if (!cJSON_IsNumber(temperature) || !cJSON_IsNumber(wind_speed) ||
         !cJSON_IsNumber(weather_code)) {
-        ESP_LOGE(TAG, "JSON 字段不完整或类型不对，本次不显示天气。 ");
+        ESP_LOGE(TAG, "JSON 字段不完整或类型不对，本次不显示天气。");
         cJSON_Delete(root);
         return;
     }
 
-    ESP_LOGI(TAG, "北京当前天气：%s，气温 %.1f °C，风速 %.1f km/h",
-             weather_code_to_text(weather_code->valueint),
-             temperature->valuedouble, wind_speed->valuedouble);
+    ESP_LOGI(TAG, "==================================================");
+    ESP_LOGI(TAG, " 🌤️ [%s - %s 实时天气报告]: ", s_current_location.region, s_current_location.city);
+    ESP_LOGI(TAG, "    - 天气状况: %s", weather_code_to_text(weather_code->valueint));
+    ESP_LOGI(TAG, "    - 当前气温: %.1f ℃", temperature->valuedouble);
+    ESP_LOGI(TAG, "    - 当前风速: %.1f km/h", wind_speed->valuedouble);
+    ESP_LOGI(TAG, "==================================================");
     cJSON_Delete(root);
 }
 
+/**
+ * ⛅ 阶段 2：根据动态经纬度请求天气
+ */
 static void fetch_weather_task(void *arg)
 {
+    // 1. 开机首先执行一次 IP 定位
+    while (!s_current_location.valid) {
+        if (!fetch_ip_location()) {
+            ESP_LOGW(TAG, "IP 定位失败，5 秒后重试...");
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        }
+    }
+
+    // 2. 根据获取到的经纬度动态生成天气请求 URL
+    char weather_url[256];
+    snprintf(weather_url, sizeof(weather_url),
+             "http://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
+             "&current=temperature_2m%%2Cwind_speed_10m%%2Cweather_code",
+             s_current_location.lat, s_current_location.lon);
+
+    ESP_LOGI(TAG, "🔗 动态生成的当地天气 URL: %s", weather_url);
+
+    // 3. 循环轮询天气（每 60 秒一次）
     while (true) {
         memset(s_response_buffer, 0, sizeof(s_response_buffer));
         s_buffer_length = 0;
         s_response_too_large = false;
 
         esp_http_client_config_t config = {
-            .url = WEATHER_API_URL,
+            .url = weather_url,
             .event_handler = http_event_handler,
-            .timeout_ms = 5000,
+            .timeout_ms = 8000,
         };
         esp_http_client_handle_t client = esp_http_client_init(&config);
         if (client == NULL) {
@@ -198,22 +321,32 @@ static void fetch_weather_task(void *arg)
             if (s_response_too_large) {
                 ESP_LOGW(TAG, "响应过大，本轮天气更新结束。");
             } else if (err != ESP_OK) {
-                ESP_LOGE(TAG, "HTTP 请求失败：%s", esp_err_to_name(err));
+                ESP_LOGE(TAG, "天气请求失败：%s", esp_err_to_name(err));
             } else if (status_code != 200) {
-                ESP_LOGW(TAG, "服务器返回 HTTP %d，本轮不解析。", status_code);
+                ESP_LOGW(TAG, "服务器返回非 200 状态码：%d", status_code);
             } else {
                 parse_weather_json(s_response_buffer);
             }
             esp_http_client_cleanup(client);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(60000));
+        time_t now = 0;
+        struct tm timeinfo = { 0 };
+        time(&now);
+        localtime_r(&now, &timeinfo);
+        char strftime_buf[64];
+        strftime(strftime_buf, sizeof(strftime_buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+        ESP_LOGI(TAG, "🕒 当前时间：%s (下次天气更新: 60秒后)", strftime_buf);
+
+        vTaskDelay(pdMS_TO_TICKS(60 * 1000));
     }
 }
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "第 12 关实验 3：HTTP 天气时钟");
+    ESP_LOGI(TAG, "==================================================");
+    ESP_LOGI(TAG, " 🚀 实验 3：IP 自动地理定位与动态天气时钟        ");
+    ESP_LOGI(TAG, "==================================================");
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -223,22 +356,11 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     if (!wifi_connect()) {
-        ESP_LOGE(TAG, "没有拿到 IP，停止天气实验。");
+        ESP_LOGE(TAG, "Wi-Fi 连接失败，程序终止。");
         return;
     }
+
     sync_time();
 
-    xTaskCreate(fetch_weather_task, "weather_task", 4096, NULL, 5, NULL);
-
-    while (true) {
-        time_t now;
-        struct tm timeinfo;
-        char time_text[48];
-
-        time(&now);
-        localtime_r(&now, &timeinfo);
-        strftime(time_text, sizeof(time_text), "%Y-%m-%d %H:%M:%S", &timeinfo);
-        ESP_LOGI(TAG, "北京时间：%s", time_text);
-        vTaskDelay(pdMS_TO_TICKS(5000));
-    }
+    xTaskCreate(fetch_weather_task, "fetch_weather_task", 6 * 1024, NULL, 5, NULL);
 }

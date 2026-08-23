@@ -164,14 +164,15 @@
 
 ### 【阶段五：无线互联与智能物联网 —— 打通手机与云端】
 
-#### 第 12 关：ESP32 Wi-Fi 联网、SNTP 网络授时时钟与 HTTP/cJSON 天气获取 📝 *[大纲规划 / 连载中]*
-- [ ] **打卡目标**：让 ESP32 融入局域网与互联网，自动校准时间和拉取天气。
-- **涉及模块**：Wi-Fi Station 模式 + SNTP 网络时钟 + ESP-HTTP-Client + cJSON 库
+#### 第 12 关：ESP32 Wi-Fi 联网、SNTP 网络授时时钟与 HTTP/HTTPS 动态天气 📖 [【阅读深度教程】](./book/12_WiFi连接管理与HTTP天气时钟.md)
+- [x] **打卡目标**：让 ESP32 融入局域网与互联网，自动校准时间、IP 地理定位并安全拉取加密天气。
+- **涉及模块**：Wi-Fi STA 模式 + FreeRTOS 事件组 + SNTP 网络时钟 + ESP-HTTP-Client + MbedTLS 全球根证书包 + cJSON
 - **实验内容**：
-  1. 连接路由器 2.4G Wi-Fi 热点，事件循环捕获 `IP_EVENT_STA_GOT_IP` 与断线自动重连。
-  2. 通过阿里云 NTP 服务器（`ntp.aliyun.com`）获取北京时间（CST-8）并格式化输出。
-  3. 发送 HTTP GET 请求 Open-Meteo RESTful API，使用 `cJSON` 安全解析气温与风速。
-- **核心知识**：Wi-Fi 事件循环机制（Event Loop）、SNTP 协议、HTTP GET 请求头、cJSON 树状节点解析与内存防泄漏。
+  1. **Wi-Fi 客户端连接**：配置 STA 模式，理解 `esp_netif_init` / `esp_event_loop_create_default` 底层架构，利用 FreeRTOS 事件组 `xEventGroupWaitBits` 实现 0% CPU 阻塞等待与有限重连。
+  2. **SNTP 网络授时**：连接阿里云 NTP 服务器（`ntp.aliyun.com`），设置 `TZ=CST-8` 东八区时区并阻塞等待硬件时间同步。
+  3. **IP 地理定位 + 动态天气时钟**：两段式级联流水线 —— 先向 `http://ip-api.com/json/` 探测公网 IP 获取所在城市与经纬度，再动态拼接 URL 轮询当地实时天气。
+  4. **HTTPS 证书加密通信**：引入 `esp_crt_bundle_attach` 挂载全球权威 CA 根证书包，掌握 TLS 握手原理，安全请求 HTTPS 加密天气 API。
+- **核心知识**：Wi-Fi 初始化七步曲流水线、FreeRTOS 事件组（五大参数拆解）、SNTP 授时与时区、两段式 IP 定位架构、TLS 握手四步曲、CA 根证书包自动校验。
 
 #### 第 13 关：ESP32 MQTT 物联网双向通信与云平台联动实战(手机远程控制) 📝 *[大纲规划 / 连载中]*
 - [ ] **打卡目标**：掌握物联网行业标准通信协议 MQTT，实现手机远程双向控制。

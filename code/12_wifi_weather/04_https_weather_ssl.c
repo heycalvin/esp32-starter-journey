@@ -27,8 +27,8 @@
 static const char *TAG = "HTTPS_WEATHER";
 
 // 请填写身边的 2.4 GHz Wi-Fi 账号密码
-#define EXAMPLE_WIFI_SSID      "CalvinHome"
-#define EXAMPLE_WIFI_PASS      "lq8841149XT"
+#define EXAMPLE_WIFI_SSID      "YOUR_WIFI_SSID"
+#define EXAMPLE_WIFI_PASS      "YOUR_WIFI_PASSWORD"
 #define EXAMPLE_WIFI_MAX_RETRY 5
 
 // 📍 IP 地理位置查询接口
