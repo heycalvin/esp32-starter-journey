@@ -39,8 +39,8 @@ static const char *TAG = "EXP0_ORIGIN_CALIBRATE";
 
 #define LCD_H_RES               240
 #define LCD_V_RES               280
-#define LCD_GAP_X               20  // ST7789 240x280 物理视口 X 偏移
-#define LCD_GAP_Y               0   // ST7789 240x280 物理视口 Y 偏移
+#define LCD_GAP_X               0   // ST7789 240x280 物理视口 X 偏移
+#define LCD_GAP_Y               20  // ST7789 240x280 物理视口 Y 偏移
 
 // RGB565 常用色彩定义 (小端字节序)
 #define COLOR_BLACK             0x0000
@@ -101,6 +101,7 @@ static void lcd_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, false, false));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
     ESP_LOGI(TAG, "✅ 1.69寸 ST7789 彩屏初始化成功 (分辨率: 240x280, Gap: X=%d, Y=%d)", LCD_GAP_X, LCD_GAP_Y);

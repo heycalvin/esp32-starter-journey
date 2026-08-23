@@ -1,30 +1,29 @@
 /**
- * 🌟 ESP32 物联网实战 —— 第 10 关 实验 3：动态示波器波形与高帧率仪表盘 (终极综合)
+ * 🌟 ESP32 物联网实战 —— 第 11 关 实验 3：智能家居中控触控面板 (Smart Home Panel)
  * 
  * 🎯 学习目标：
- *    1. 掌握局部显存重绘与防闪烁双缓冲绘制思想；
- *    2. 实时生成平滑正弦波 (Sine Wave) 动态折线示波器；
- *    3. 动态渲染色彩呼吸进度条与 FPS 帧率实时监测。
+ *    1. 掌握 LVGL v9 核心高级控件体系（`lv_switch`、`lv_slider`、`lv_arc`、`lv_card`）；
+ *    2. 掌握滑动条与圆形仪表盘的数值实时双向绑定；
+ *    3. 打造一个兼具高颜值、全功能触控交互的智能家居微型中控屏。
  */
 
 #include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
+#include "driver/i2c_master.h"
 #include "driver/spi_master.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
-#include "esp_heap_caps.h"
+#include "esp_lcd_touch_cst816s.h"
+#include "esp_lvgl_port.h"
+#include "lvgl.h"
 
-static const char *TAG = "EXP3_DASHBOARD";
+static const char *TAG = "EXP3_SMART_PANEL";
 
 #define LCD_HOST                SPI2_HOST
-#define LCD_PIXEL_CLOCK_HZ      (40 * 1000 * 1000)
 #define LCD_PIN_MOSI            GPIO_NUM_19
 #define LCD_PIN_SCLK            GPIO_NUM_18
 #define LCD_PIN_CS              GPIO_NUM_5
@@ -32,35 +31,31 @@ static const char *TAG = "EXP3_DASHBOARD";
 #define LCD_PIN_RST             GPIO_NUM_21
 #define LCD_PIN_BACKLIGHT       GPIO_NUM_26
 
+#define TOUCH_I2C_SCL           GPIO_NUM_22
+#define TOUCH_I2C_SDA           GPIO_NUM_23
+#define TOUCH_I2C_INT           GPIO_NUM_35
+
+#define LED2_PIN                GPIO_NUM_27
+
 #define LCD_H_RES               240
 #define LCD_V_RES               280
-#define LCD_GAP_X               0
-#define LCD_GAP_Y               20
 
-#define COLOR_BLACK             0x0000
-#define COLOR_WHITE             0xFFFF
-#define COLOR_RED               0x00F8
-#define COLOR_GREEN             0xE007
-#define COLOR_BLUE              0x1F00
-#define COLOR_YELLOW            0xE0FF
-#define COLOR_CYAN              0xFF07
-#define COLOR_BG                0x1010
-#define COLOR_CARD_BG           0x2018
-
+static esp_lcd_panel_io_handle_t s_io = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
-static uint16_t *s_line_buffer = NULL;  // 常驻 480 字节 DMA 行显存 (供 fill_rect 绘制静态卡片与进度条)
-static uint16_t *s_wave_canvas = NULL;  // 常驻 40 KB DMA 波形画布 (供示波器每秒 50 帧无损超高速推屏)
+static esp_lcd_touch_handle_t s_touch = NULL;
 
-/* 动态波形画布区域 (宽 200, 高 100) */
-#define WAVE_W 200
-#define WAVE_H 100
-#define WAVE_X 20
-#define WAVE_Y 140
+static lv_obj_t *s_slider_label = NULL;
+static lv_obj_t *s_temp_arc = NULL;
+static lv_obj_t *s_temp_label = NULL;
 
-static void lcd_init(void)
+static void hardware_init(void)
 {
-    gpio_config_t bl = { .pin_bit_mask = (1ULL << LCD_PIN_BACKLIGHT), .mode = GPIO_MODE_OUTPUT };
-    gpio_config(&bl);
+    gpio_config_t led_cfg = { .pin_bit_mask = (1ULL << LED2_PIN), .mode = GPIO_MODE_OUTPUT };
+    gpio_config(&led_cfg);
+    gpio_set_level(LED2_PIN, 0);
+
+    gpio_config_t bl_cfg = { .pin_bit_mask = (1ULL << LCD_PIN_BACKLIGHT), .mode = GPIO_MODE_OUTPUT };
+    gpio_config(&bl_cfg);
     gpio_set_level(LCD_PIN_BACKLIGHT, 1);
 
     spi_bus_config_t buscfg = {
@@ -69,138 +64,186 @@ static void lcd_init(void)
         .miso_io_num = GPIO_NUM_NC,
         .quadwp_io_num = GPIO_NUM_NC,
         .quadhd_io_num = GPIO_NUM_NC,
-        .max_transfer_sz = WAVE_W * WAVE_H * sizeof(uint16_t),
+        .max_transfer_sz = LCD_H_RES * 40 * sizeof(uint16_t),
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
-    esp_lcd_panel_io_handle_t io = NULL;
     esp_lcd_panel_io_spi_config_t io_cfg = {
         .dc_gpio_num = LCD_PIN_DC,
         .cs_gpio_num = LCD_PIN_CS,
-        .pclk_hz = LCD_PIXEL_CLOCK_HZ,
+        .pclk_hz = 40 * 1000 * 1000,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
         .spi_mode = 0,
         .trans_queue_depth = 10,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &s_io));
 
     esp_lcd_panel_dev_config_t p_cfg = {
         .reset_gpio_num = LCD_PIN_RST,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
         .bits_per_pixel = 16,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io, &p_cfg, &s_panel));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(s_io, &p_cfg, &s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false)); // 适配开发板屏幕排线方向
+    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 0, 20));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, false, false));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
-    // 开机一次性分配常驻 DMA 显存 (0 动态内存碎片，0 异步时序竞争)
-    s_line_buffer = heap_caps_malloc(LCD_H_RES * sizeof(uint16_t), MALLOC_CAP_DMA);
-    s_wave_canvas = heap_caps_malloc(WAVE_W * WAVE_H * sizeof(uint16_t), MALLOC_CAP_DMA);
+    // Touch
+    i2c_master_bus_config_t i2c_bus_cfg = {
+        .i2c_port = I2C_NUM_0,
+        .sda_io_num = TOUCH_I2C_SDA,
+        .scl_io_num = TOUCH_I2C_SCL,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    i2c_master_bus_handle_t i2c_bus = NULL;
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus));
+
+    esp_lcd_panel_io_handle_t tp_io = NULL;
+    esp_lcd_panel_io_i2c_config_t tp_io_cfg = ESP_LCD_TOUCH_IO_I2C_CST816S_CONFIG();
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus, &tp_io_cfg, &tp_io));
+
+    esp_lcd_touch_config_t tp_cfg = {
+        .x_max = LCD_H_RES,
+        .y_max = LCD_V_RES,
+        .rst_gpio_num = GPIO_NUM_NC,
+        .int_gpio_num = TOUCH_I2C_INT,
+        .flags = { .swap_xy = 0, .mirror_x = 0, .mirror_y = 0 },
+    };
+    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816s(tp_io, &tp_cfg, &s_touch));
 }
 
-/* 填充矩形区域 (使用常驻行显存逐行推屏，绝无毛刺花边) */
-static void fill_rect(int x, int y, int w, int h, uint16_t color)
+/* 开关事件回调 */
+static void switch_event_cb(lv_event_t *e)
 {
-    if (x >= LCD_H_RES || y >= LCD_V_RES || w <= 0 || h <= 0) return;
-    if (x + w > LCD_H_RES) w = LCD_H_RES - x;
-    if (y + h > LCD_V_RES) h = LCD_V_RES - y;
-
-    for (int i = 0; i < w; i++) {
-        s_line_buffer[i] = color;
-    }
-
-    for (int row = y; row < y + h; row++) {
-        esp_lcd_panel_draw_bitmap(s_panel, x, row, x + w, row + 1, s_line_buffer);
-    }
+    lv_obj_t *sw = lv_event_get_target(e);
+    bool is_on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    gpio_set_level(LED2_PIN, is_on ? 1 : 0);
+    ESP_LOGI(TAG, "💡 智能灯光开关切换 ➔ %s", is_on ? "ON" : "OFF");
 }
 
-/* 全屏纯色清屏 */
-static void fill_screen(uint16_t color)
+/* 滑动条事件回调 */
+static void slider_event_cb(lv_event_t *e)
 {
-    fill_rect(0, 0, LCD_H_RES, LCD_V_RES, color);
+    lv_obj_t *slider = lv_event_get_target(e);
+    int32_t val = lv_slider_get_value(slider);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Brightness: %ld%%", (long)val);
+    lv_label_set_text(s_slider_label, buf);
+    ESP_LOGI(TAG, "🔆 亮度调节 ➔ %ld%%", (long)val);
 }
 
-/* 绘制平滑动态示波器波形 (常驻画布，极速 DMA 推屏) */
-static void draw_waveform_frame(float phase)
+static void create_smart_home_ui(void)
 {
-    if (!s_wave_canvas) return;
+    lvgl_port_lock(0);
 
-    // 1. 清空画布背景为纯黑
-    for (int i = 0; i < WAVE_W * WAVE_H; i++) {
-        s_wave_canvas[i] = COLOR_BLACK;
-    }
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x0F172A), 0);
 
-    // 2. 绘制暗灰网格 (纵向 + 横向中心虚线)
-    for (int x = 0; x < WAVE_W; x += 20) {
-        for (int y = 0; y < WAVE_H; y += 4) {
-            s_wave_canvas[y * WAVE_W + x] = 0x2104;
-        }
-    }
-    for (int x = 0; x < WAVE_W; x += 4) {
-        s_wave_canvas[(WAVE_H / 2) * WAVE_W + x] = 0x2104;
-    }
+    // 1. 顶部状态栏
+    lv_obj_t *title = lv_label_create(scr);
+    lv_label_set_text(title, "Smart Station");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x38BDF8), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 15, 12);
 
-    // 3. 计算并绘制平滑正弦波 (青色波形，加粗 1 像素)
-    for (int x = 0; x < WAVE_W; x++) {
-        float angle = (float)x * 0.08f + phase;
-        int y = (int)(sinf(angle) * 35.0f) + (WAVE_H / 2);
-        if (y >= 0 && y < WAVE_H) {
-            s_wave_canvas[y * WAVE_W + x] = COLOR_CYAN;
-            if (y + 1 < WAVE_H) s_wave_canvas[(y + 1) * WAVE_W + x] = COLOR_CYAN;
-        }
-    }
+    // 2. 居中温度圆弧仪表盘
+    s_temp_arc = lv_arc_create(scr);
+    lv_obj_set_size(s_temp_arc, 110, 110);
+    lv_arc_set_rotation(s_temp_arc, 135);
+    lv_arc_set_bg_angles(s_temp_arc, 0, 270);
+    lv_arc_set_range(s_temp_arc, 0, 50);
+    lv_arc_set_value(s_temp_arc, 26);
+    lv_obj_set_style_arc_color(s_temp_arc, lv_color_hex(0x10B981), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(s_temp_arc, 10, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(s_temp_arc, 10, LV_PART_MAIN);
+    lv_obj_remove_style(s_temp_arc, NULL, LV_PART_KNOB); // 去掉拖拽把手，作为纯展示仪表
+    lv_obj_align(s_temp_arc, LV_ALIGN_TOP_MID, 0, 42);
 
-    // 4. 局部极速 DMA 推屏
-    esp_lcd_panel_draw_bitmap(s_panel, WAVE_X, WAVE_Y, WAVE_X + WAVE_W, WAVE_Y + WAVE_H, s_wave_canvas);
+    s_temp_label = lv_label_create(scr);
+    lv_label_set_text(s_temp_label, "26.5°C");
+    lv_obj_set_style_text_font(s_temp_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_temp_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(s_temp_label, LV_ALIGN_TOP_MID, 0, 85);
+
+    // 3. 灯光触控开关卡片
+    lv_obj_t *card_sw = lv_obj_create(scr);
+    lv_obj_set_size(card_sw, 210, 50);
+    lv_obj_align(card_sw, LV_ALIGN_TOP_MID, 0, 160);
+    lv_obj_set_style_bg_color(card_sw, lv_color_hex(0x1E293B), 0);
+    lv_obj_set_style_border_color(card_sw, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_radius(card_sw, 12, 0);
+
+    lv_obj_t *lbl_sw = lv_label_create(card_sw);
+    lv_label_set_text(lbl_sw, "Main Light");
+    lv_obj_set_style_text_color(lbl_sw, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_align(lbl_sw, LV_ALIGN_LEFT_MID, 0, 0);
+
+    lv_obj_t *sw = lv_switch_create(card_sw);
+    lv_obj_align(sw, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(sw, switch_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    // 4. 亮度触控滑动条卡片
+    lv_obj_t *card_sl = lv_obj_create(scr);
+    lv_obj_set_size(card_sl, 210, 55);
+    lv_obj_align(card_sl, LV_ALIGN_TOP_MID, 0, 215);
+    lv_obj_set_style_bg_color(card_sl, lv_color_hex(0x1E293B), 0);
+    lv_obj_set_style_border_color(card_sl, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_radius(card_sl, 12, 0);
+
+    s_slider_label = lv_label_create(card_sl);
+    lv_label_set_text(s_slider_label, "Brightness: 80%");
+    lv_obj_set_style_text_font(s_slider_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_slider_label, lv_color_hex(0x94A3B8), 0);
+    lv_obj_align(s_slider_label, LV_ALIGN_TOP_LEFT, 0, -2);
+
+    lv_obj_t *slider = lv_slider_create(card_sl);
+    lv_obj_set_size(slider, 180, 10);
+    lv_slider_set_value(slider, 80, LV_ANIM_OFF);
+    lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, 2);
+    lv_obj_add_event_cb(slider, slider_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    lvgl_port_unlock();
 }
 
 void app_main(void)
 {
     ESP_LOGI(TAG, "==================================================");
-    ESP_LOGI(TAG, "   🚀 关卡 10 实验 3：ST7789 动态波形与高帧率示波器 ");
+    ESP_LOGI(TAG, "   🚀 关卡 11 实验 3：智能家居触控中控面板 (终极)  ");
     ESP_LOGI(TAG, "==================================================");
 
-    lcd_init();
+    hardware_init();
 
-    // 1. 绘制静态深色大背景 (全屏清屏)
-    fill_screen(COLOR_BG);
+    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
-    // 2. 绘制顶部信息卡片
-    fill_rect(15, 15, 210, 45, COLOR_CARD_BG);
-    fill_rect(20, 20, 6, 35, COLOR_GREEN); // 运行状态指示条
+    const lvgl_port_display_cfg_t disp_cfg = {
+        .io_handle = s_io,
+        .panel_handle = s_panel,
+        .buffer_size = LCD_H_RES * 40,
+        .double_buffer = true,
+        .hres = LCD_H_RES,
+        .vres = LCD_V_RES,
+        .monochrome = false,
+        .rotation = { .swap_xy = false, .mirror_x = false, .mirror_y = false },
+        .flags = { .buff_dma = true, .swap_bytes = true }
+    };
+    lv_display_t *disp = lvgl_port_add_disp(&disp_cfg);
 
-    // 3. 绘制进度条边框卡片
-    fill_rect(15, 70, 210, 50, COLOR_CARD_BG);
+    const lvgl_port_touch_cfg_t touch_cfg = {
+        .disp = disp,
+        .handle = s_touch,
+    };
+    lvgl_port_add_touch(&touch_cfg);
 
-    float phase = 0.0f;
-    int progress = 0;
-    int frame_count = 0;
-    int64_t last_time = esp_timer_get_time();
+    create_smart_home_ui();
 
     while (1) {
-        // 刷新动态波形
-        draw_waveform_frame(phase);
-        phase += 0.15f;
-
-        // 刷新动态进度条 (宽 180, 高 12)
-        progress = (progress + 2) % 180;
-        fill_rect(30, 95, progress, 12, COLOR_YELLOW);
-        fill_rect(30 + progress, 95, 180 - progress, 12, COLOR_BLACK);
-
-        frame_count++;
-        int64_t now = esp_timer_get_time();
-        if (now - last_time >= 1000000) { // 每秒统计一次 FPS
-            float fps = (float)frame_count * 1000000.0f / (float)(now - last_time);
-            ESP_LOGI(TAG, "📈 [LCD 渲染性能] 实时刷新帧率: \033[32m%5.1f FPS\033[0m (DMA 硬件加速中)", fps);
-            frame_count = 0;
-            last_time = now;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(20)); // 约 50 FPS
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

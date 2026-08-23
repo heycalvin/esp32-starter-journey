@@ -16,7 +16,11 @@
   * 屏幕 SPI：CS(`GPIO5`), DC(`GPIO17`), SCLK(`GPIO18`), MOSI(`GPIO19`), RST(`GPIO21`), 背光(`GPIO26`)
   * 触摸 I2C：SCL(`GPIO22`), SDA(`GPIO23`), INT(`GPIO35`)
   * 传感器：DHT11(`GPIO25`), HC-SR04(`GPIO32/33`), SR602(`GPIO34`), NTC(`GPIO36/VP`), WS2812(`GPIO26`)
-* **硬件约束**：
+* **硬件约束与屏幕固定配置**：
+  * **屏幕排线与视口配置（固定铁律）**：
+    `ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 0, 20));`
+    `ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, false, false));`
+    在 LVGL 端口中：`.rotation = { .swap_xy = false, .mirror_x = false, .mirror_y = false }`，绝不可修改为其他值，否则会导致文字镜像反转或花屏！
   * `GPIO26` 与 LCD 背光复用，调试 WS2812 必须拔下 JP7 跳线帽；
   * `GPIO34/35/36/39` 为纯输入管脚，切勿配置为输出。
 

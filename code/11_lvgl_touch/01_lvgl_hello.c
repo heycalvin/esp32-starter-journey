@@ -36,6 +36,7 @@ static const char *TAG = "EXP1_LVGL_HELLO";
 #define LCD_H_RES               240
 #define LCD_V_RES               280
 
+static esp_lcd_panel_io_handle_t s_io = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
 static lv_display_t *s_lvgl_disp = NULL;
 
@@ -49,11 +50,13 @@ static void lcd_init(void)
     spi_bus_config_t buscfg = {
         .sclk_io_num = LCD_PIN_SCLK,
         .mosi_io_num = LCD_PIN_MOSI,
+        .miso_io_num = GPIO_NUM_NC,
+        .quadwp_io_num = GPIO_NUM_NC,
+        .quadhd_io_num = GPIO_NUM_NC,
         .max_transfer_sz = LCD_H_RES * 40 * sizeof(uint16_t),
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
-    esp_lcd_panel_io_handle_t io = NULL;
     esp_lcd_panel_io_spi_config_t io_cfg = {
         .dc_gpio_num = LCD_PIN_DC,
         .cs_gpio_num = LCD_PIN_CS,
@@ -63,18 +66,19 @@ static void lcd_init(void)
         .spi_mode = 0,
         .trans_queue_depth = 10,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &s_io));
 
     esp_lcd_panel_dev_config_t p_cfg = {
         .reset_gpio_num = LCD_PIN_RST,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
         .bits_per_pixel = 16,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io, &p_cfg, &s_panel));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(s_io, &p_cfg, &s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 20, 0));
+    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 0, 20));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, false, false));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 }
 
@@ -84,7 +88,7 @@ static void lvgl_init(void)
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
     const lvgl_port_display_cfg_t disp_cfg = {
-        .io_handle = NULL,
+        .io_handle = s_io,
         .panel_handle = s_panel,
         .buffer_size = LCD_H_RES * 40,
         .double_buffer = true,
@@ -108,7 +112,7 @@ static void create_hello_ui(void)
     lv_obj_t *title = lv_label_create(scr);
     lv_label_set_text(title, "ESP32 LVGL v9");
     lv_obj_set_style_text_color(title, lv_color_hex(0x38BDF8), 0); // 荧光青
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
 
     // 2. 现代磨砂卡片

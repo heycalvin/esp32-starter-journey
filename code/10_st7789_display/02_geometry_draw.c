@@ -33,8 +33,8 @@ static const char *TAG = "EXP2_GEOMETRY";
 
 #define LCD_H_RES               240
 #define LCD_V_RES               280
-#define LCD_GAP_X               20
-#define LCD_GAP_Y               0
+#define LCD_GAP_X               0
+#define LCD_GAP_Y               20
 
 // 常用 RGB565 色彩定义
 #define COLOR_BLACK             0x0000
@@ -88,7 +88,7 @@ static void lcd_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false)); // 适配开发板屏幕排线方向
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, false, false));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
     // 开机预先分配一行 240 像素 (480 字节) 的常驻 DMA 显存，供画点、画线、画矩形共用
