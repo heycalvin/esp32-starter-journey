@@ -1,225 +1,396 @@
-# 第 12 关：ESP32 Wi-Fi 连接管理与 HTTP 互联网天气时钟
+# 第 12 关：让 ESP32 上网——Wi-Fi、网络时间与互联网天气
 
 ![第12关封面插画](../docs/images/esp32_level12_cover.jpg)
 
----
+这一关，我们把 ESP32 从一台只会做本地事情的小机器，变成一只会“上网问问题”的小助手：它先连家里的路由器，再向时间服务器问现在几点，最后向天气服务器问北京现在的天气。
 
-## 🎯 本关学习目标
-
-在前 11 关中，我们的 ESP32 都是作为一个“单机设备”在独立运行。
-
-从本关开始，我们将正式进入 **【阶段五：无线互联与智能物联网】** —— 为 ESP32 插上 2.4GHz 无线 Wi-Fi 的翅膀，让它连接家庭路由器冲入互联网，实时抓取世界各地的天气预报、同步国家授时中心毫秒级北京时间！
-
-完成本关卡后，你将达成以下核心成就：
-1. **搞懂 Wi-Fi STA（客户端）与 AP（热点）模式**：理解单片机连接 Wi-Fi 路由器的底层流程；
-2. **掌握 ESP-IDF 事件驱动网络架构（Event Loop）**：理解状态广播大喇叭与 FreeRTOS 事件组（EventGroup）同步；
-3. **掌握 SNTP 网络授时机制**：同步阿里云与国家授时中心 NTP 服务器，配置中国标准时间（UTC+8: CST-8）；
-4. **掌握 `esp_http_client` 与 RESTful API 交互**：发起 HTTP GET 请求抓取实时云端气象数据；
-5. **掌握嵌入式 `cJSON` 库解析标准**：安全解析嵌套 JSON 结构体并提取气温、风速与天气代号。
+> 本关的天气和时间显示在**串口日志**中，不会自动画到 LCD。把数据放到屏幕上，是后续把“联网”和“界面”组合起来的练习。
 
 ---
 
-## 12.1 什么是 Wi-Fi STA 与 AP 模式？
+## 12.1 这一关你会完成什么
 
-初学物联网的小白经常被 STA 和 AP 搞晕，其实它们就在我们日常生活中：
+完成三个实验后，你可以解释并亲手验证这条链路：
 
 ```text
- ┌─────────────────────────────────────────────────────────────┐
- │                【Wi-Fi STA 模式 VS AP 模式】                 │
- │                                                             │
- │  1. STA (Station 客户端模式) ➔ 相当于你的【智能手机】         │
- │     - 自身不发 Wi-Fi 信号；                                 │
- │     - 主动去搜索并输入密码连接家里的 Wi-Fi 路由器；         │
- │     - 从路由器获取 IP 地址，从而访问互联网！                │
- │                                                             │
- │  2. AP (Access Point 热点模式) ➔ 相当于【便携式路由器】      │
- │     - 自己发射一个 Wi-Fi 名字（例如 "ESP32-Setup-WiFi"）；   │
- │     - 允许手机或电脑连上来给它配置参数（配网模式）。        │
- └─────────────────────────────────────────────────────────────┘
+ESP32 ──Wi-Fi──> 家用路由器 ──> 互联网
+  │                 │              │
+  │                 └─ 分配 IP      ├─ 时间服务器（SNTP）
+  │                                └─ 天气服务器（HTTP）
+  │
+  └─ 把收到的文字（JSON）拆成气温、风速和天气状态
 ```
 
-👉 **本关重点**：我们让 ESP32 运行在 **STA 客户端模式**，连入家里的路由器获取上网能力！
+| 实验 | 先做什么 | 成功时你看到什么 |
+| --- | --- | --- |
+| 1 | ESP32 连接 2.4 GHz Wi-Fi | 串口打印路由器分配的 IP 地址 |
+| 2 | 向网络时间服务器对时 | 串口每秒打印一次北京时间 |
+| 3 | 请求天气接口并解析 JSON | 串口每分钟打印气温、风速和天气 |
 
 ---
 
-## 12.2 事件驱动网络栈：为什么不能用 `while` 死等 Wi-Fi？
+## 12.2 开始前：只做这四件事
 
-单片机连 Wi-Fi 是一个**耗时 1~3 秒的复杂无线握手过程**（扫描信道 ➔ 身份认证 ➔ 4次握手 ➔ DHCP 分配 IP）。
+1. 不需要新增杜邦线。Wi-Fi 是 ESP32 芯片内置的无线功能。
+2. 准备一个 **2.4 GHz** Wi-Fi 名称和密码。本项目的 ESP32-WROOM-32E 不支持直接连接 5 GHz Wi-Fi。
+3. 手机热点也可以，但要在热点设置中明确开启 2.4 GHz；只写“自动频段”的热点可能让 ESP32 看不到。
+4. 打开实验源码，把下面两行改成自己的网络信息。不要把真实密码提交到 Git 仓库。
 
-如果让 CPU 在 `while` 死循环里傻等，整个系统的屏幕、按键全部都会卡死。
-
-ESP-IDF 采用了现代化的 **Event Loop（系统事件循环）大喇叭机制**：
-1. **CPU 启动 Wi-Fi**：直接给底层网卡下令：*“你去连路由器的这个账号密码，我先去干别的事了！”*；
-2. **底层网卡自动握手**：
-   - 握手成功 ➔ 大喇叭广播事件：`WIFI_EVENT_STA_CONNECTED`；
-   - 路由器分配好 IP ➔ 大喇叭广播事件：`IP_EVENT_STA_GOT_IP`；
-   - 密码错误断开 ➔ 大喇叭广播事件：`WIFI_EVENT_STA_DISCONNECTED`；
-3. **回调函数响应**：我们在回调函数里听到对应广播后，再精准执行业务逻辑，**CPU 利用率几乎为 0%**！
-
-```mermaid
-sequenceDiagram
-    participant App as 应用程序 (app_main)
-    participant WiFi as ESP32 Wi-Fi 底层网卡
-    participant Router as 家用路由器
-    participant Event as 系统事件循环 (Event Loop)
-
-    App->>WiFi: esp_wifi_connect() 发起连接
-    WiFi->>Router: 无线认证与 DHCP 握手
-    Router-->>WiFi: 分配 IP 地址: 192.168.1.100
-    WiFi->>Event: 广播 IP_EVENT_STA_GOT_IP
-    Event->>App: 触发 event_handler 回调，通知网络就绪！
+```c
+#define EXAMPLE_WIFI_SSID "YOUR_WIFI_SSID"
+#define EXAMPLE_WIFI_PASS "YOUR_WIFI_PASSWORD"
 ```
 
----
+源码和本章是一一对应的：
 
-## 12.3 什么是 SNTP？单片机如何获得“毫秒级精准北京时间”？
+| 实验 | 完整源码 | 切换并烧录 |
+| --- | --- | --- |
+| 1 | [`01_wifi_sta_connect.c`](../code/12_wifi_weather/01_wifi_sta_connect.c) | `./switch_code.sh 12 1 --flash` |
+| 2 | [`02_sntp_time_sync.c`](../code/12_wifi_weather/02_sntp_time_sync.c) | `./switch_code.sh 12 2 --flash` |
+| 3 | [`03_http_weather_clock.c`](../code/12_wifi_weather/03_http_weather_clock.c) | `./switch_code.sh 12 3 --flash` |
 
-很多小白问：**“单片机没有电池，断电重启后时间怎么知道现在是几点？”**
-
-答案是 **SNTP（Simple Network Time Protocol，简单网络时间协议）**：
-* 只要 ESP32 连上 Wi-Fi，它就会向世界著名的授时服务器（如阿里云 `ntp.aliyun.com`）发送一个轻量级 UDP 数据包；
-* 阿里云授时中心返回当前的**国际原子钟高精度时间戳（UTC 时间）**；
-* ESP32 自动加上 8 小时（东八区 UTC+8），并同步校准内部的硬件 RTC 时钟！
-
----
-
-## 12.4 📚 核心库函数功能字典与关键参数解密（小白必读）
+> [!TIP]
+> 先只运行实验 1。不要一上来就运行天气程序；网络、时间、天气三件事一起出错时，最难判断是哪一步有问题。
 
 ---
 
-### 1. 🛠️ 本章引入的核心头文件与 CMake 依赖
+## 12.3 先有地图：数据从哪里来，最后去了哪里？
 
-| 头文件 | 作用说明 | 对应 CMake / Component | 核心函数 / 宏 |
-| :--- | :--- | :--- | :--- |
-| **`"esp_wifi.h"`** | **Wi-Fi 射频控制与模式配置** | **`esp_wifi`** | `esp_wifi_init()`、`esp_wifi_set_mode()`、`esp_wifi_start()` |
-| **`"esp_event.h"`** | **系统事件大喇叭分发** | **`esp_event`** | `esp_event_loop_create_default()`、`esp_event_handler_register()` |
-| **`"esp_sntp.h"`** | **网络 NTP 原子钟授时协议** | **`lwip`** | `esp_sntp_init()`、`esp_sntp_setservername()` |
-| **`"esp_http_client.h"`** | **HTTP/HTTPS 客户端网络请求** | **`esp_http_client`** | `esp_http_client_init()`、`esp_http_client_perform()` |
-| **`"cJSON.h"`** | **轻量级嵌入式 JSON 格式解析器** | **`espressif/cjson`** | `cJSON_Parse()`、`cJSON_GetObjectItem()`、`cJSON_Delete()` |
+把网络想成寄快递。
+
+```text
+你（ESP32） ──> 小区前台（路由器） ──> 快递网络（互联网） ──> 商家（服务器）
+       └──── 前台先给你一个房间号：IP 地址 ────┘
+```
+
+这里有六个词，先记住它们分别解决什么问题：
+
+| 名词 | 生活中的感觉 | 在本关里的作用 |
+| --- | --- | --- |
+| Wi-Fi | 你和路由器之间的无线通道 | 让 ESP32 能找到家里的路由器 |
+| STA | 一台主动去连 Wi-Fi 的设备 | ESP32 本关扮演的角色，和手机相似 |
+| IP 地址 | 小区里的门牌号 | 路由器用它把网络数据送回 ESP32 |
+| DNS | 把“店名”查成“街道门牌” | 把 `api.open-meteo.com` 查成服务器 IP |
+| HTTP | 点单时的一问一答 | ESP32 向天气服务发出 GET 请求并接收回答 |
+| JSON | 有标签的快递清单 | 服务器返回的文字，里面写着温度、风速等数据 |
+
+### 第一层：直觉
+
+连上 Wi-Fi 不等于已经能访问天气网站。它更像是你的手机已经连上家中路由器；路由器还要给手机分配一个局域网地址，手机才知道“我是谁、回信该送到哪里”。
+
+### 第二层：为什么要等到拿到 IP？
+
+ESP32 连路由器时，先完成无线认证；随后 DHCP（可以理解为路由器的“自动发门牌号”服务）才会给它 IP、网关和 DNS 等信息。
+
+```text
+1. ESP32：我要连这个 Wi-Fi
+2. 路由器：密码正确，可以进来
+3. 路由器：你的 IP 是 192.168.x.x，出门请走我，查名字请问 DNS
+4. ESP32：现在才开始问天气和时间
+```
+
+在 ESP-IDF 中，第 3 步完成会产生 `IP_EVENT_STA_GOT_IP` 事件。**只有收到它，才启动 SNTP、HTTP 等网络业务。**
+
+### 第三层：真实产品还会多什么？
+
+家用小实验可以把 Wi-Fi 名称和密码写在源码宏里。真实设备通常会使用配网页面或蓝牙配网，把凭据存到 NVS，并增加断线退避、证书校验、远程日志和升级机制。本关先只掌握最小、可观察的链路。
 
 ---
 
-### 2. 🎛️ 核心函数与关键细节深度解密
+## 12.4 为什么不用 `while` 空转等待？——事件和事件组
 
-#### ① `cJSON` 拆快递三步法（内存释放警示 ⚠️）
-* **第一步：拆封包裹**
-  ```c
-  cJSON *root = cJSON_Parse(json_string); // 将字符串转换成内存树状结构
-  ```
-* **第二步：按键名取值**
-  ```c
-  cJSON *temp = cJSON_GetObjectItem(root, "temperature");
-  double current_temp = temp->valuedouble; // 获取浮点数数值
-  ```
-* **第三步：🚨 必须销毁包装盒（极易导致内存泄漏 ⚠️）**
-  ```c
-  cJSON_Delete(root); // 必须释放整棵 JSON 树占用的 RAM！
-  ```
+Wi-Fi 连接需要时间，但 ESP32 不该像站在门口反复喊“连上了吗？”那样空转耗电。
+
+本关用了两个小工具：
+
+```text
+系统事件循环：像广播站
+  “Wi-Fi 已启动！”
+  “Wi-Fi 断开！”
+  “已经拿到 IP！”
+
+事件组：像两张便签
+  [已连接并拿到 IP]  或  [重试次数用完]
+```
+
+事件回调函数负责听广播、贴便签；`app_main()` 用 `xEventGroupWaitBits()` 等待两种结果之一。它不是空循环；Wi-Fi 驱动和系统事件任务仍会继续工作。
+
+```c
+if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+    xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    ESP_LOGI(TAG, "已从路由器拿到 IP：" IPSTR,
+             IP2STR(&event->ip_info.ip));
+}
+```
+
+掉线时，示例最多重试 5 次。达到上限后，它会设置失败便签并明确停止后续业务，而不是“永远卡在等待网络”。
 
 ---
 
-## 12.5 实战第 1 步：Wi-Fi Station 模式健壮连接器 (带断线重连)
+## 12.5 实验 1：先拿到一个 IP 地址
 
-> 📁 **配套源码文件**：[`code/12_wifi_weather/01_wifi_sta_connect.c`](../code/12_wifi_weather/01_wifi_sta_connect.c)  
-> ⚡ **一键切换运行**：在终端运行 `./switch_code.sh 12 1 --flash` 即可秒级切换并自动烧录！
+### 运行
+
+1. 打开 [`01_wifi_sta_connect.c`](../code/12_wifi_weather/01_wifi_sta_connect.c)，填写 Wi-Fi 名称和密码。
+2. 在项目根目录运行：
+
+   ```bash
+   ./switch_code.sh 12 1 --flash
+   ```
+
+3. 打开串口监视器，等待连接结果。
+
+### 成功时应该看到
+
+```text
+I (....) WIFI_STA: Wi-Fi 已启动，正在向路由器发起连接...
+I (....) WIFI_STA: 已从路由器拿到 IP：192.168.1.123
+I (....) WIFI_STA: 网络准备完成：下一步可以进行 DNS、HTTP 或 SNTP 请求。
+```
+
+IP 的具体数字会不同，这是正常的。它由你的路由器分配。
+
+### 读懂最关键的三块代码
+
+**1. 选择 STA 模式。** STA（Station）就是“客户端”。本关 ESP32 像手机一样加入已有路由器；AP（热点）则是 ESP32 自己创建一个 Wi-Fi，让手机来连它。
+
+```c
+ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+ESP_ERROR_CHECK(esp_wifi_start());
+```
+
+**2. 连接断开时有限重试。** `s_retry_count` 是计数器。密码错、信号弱或路由器关机时，它最多再试 5 次。
+
+```c
+if (s_retry_count < EXAMPLE_WIFI_MAX_RETRY) {
+    s_retry_count++;
+    ESP_ERROR_CHECK(esp_wifi_connect());
+} else {
+    xEventGroupSetBits(s_wifi_event_group, WIFI_FAILED_BIT);
+}
+```
+
+**3. 等的是“成功或失败”，不是无期限的希望。**
+
+```c
+EventBits_t bits = xEventGroupWaitBits(
+    s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAILED_BIT,
+    pdFALSE, pdFALSE, portMAX_DELAY);
+```
+
+当 `WIFI_CONNECTED_BIT` 出现，说明已经有 IP；当 `WIFI_FAILED_BIT` 出现，说明本次连接失败，应先排查网络再继续。
+
+---
+
+## 12.6 实验 2：向网络问“现在几点”
+
+断电后的 ESP32 不知道现实世界的日期和时间。联网后，它可以使用 SNTP（Simple Network Time Protocol，简单网络时间协议）向时间服务器询问标准时间。
+
+```text
+ESP32：现在几点？
+时间服务器：这是 UTC 时间戳
+ESP32：我在中国，用时区规则显示为 UTC+8 的北京时间
+```
+
+### 运行与成功标准
+
+填写 Wi-Fi 信息后运行：
+
+```bash
+./switch_code.sh 12 2 --flash
+```
+
+成功日志类似：
+
+```text
+I (....) SNTP_CLOCK: 已拿到 IP，可以开始网络授时。
+I (....) SNTP_CLOCK: 正在等待网络时间服务器响应，最长等待 10 秒...
+I (....) SNTP_CLOCK: 已收到授时响应，系统时间已校准。
+I (....) SNTP_CLOCK: 北京时间：2026-08-22 10:30:45
+```
+
+### 先分清两件事：对时与显示时区
+
+服务器提供的是 UTC（协调世界时）。`TZ` 和 `tzset()` 只告诉 C 库“把时间显示成哪个时区”，它们不是把服务器给的时间硬加 8 小时。
+
+```c
+setenv("TZ", "CST-8", 1);
+tzset();
+
+esp_sntp_config_t config =
+    ESP_NETIF_SNTP_DEFAULT_CONFIG("ntp.aliyun.com");
+ESP_ERROR_CHECK(esp_netif_sntp_init(&config));
+
+if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(10000)) != ESP_OK) {
+    ESP_LOGW(TAG, "等待授时超时。请检查网络是否能访问时间服务器。");
+}
+```
+
+`esp_netif_sntp_sync_wait()` 是这次改造最重要的一处：程序确实等到收到授时响应，才说“已校准”。网络延迟、服务器状态和本地时钟都会影响精度，因此不要把它理解为“毫秒级绝对准确”。
+
+---
+
+## 12.7 实验 3：向天气服务请求一份 JSON
+
+HTTP 就是一次短暂的“一问一答”。浏览器访问网页时也在做类似的事，只是浏览器把结果排成漂亮页面；ESP32 先把原始文字交给你看。
+
+```text
+ESP32  ── GET /v1/forecast?... ──> Open-Meteo 天气服务
+ESP32  <── HTTP 200 + JSON ─────  Open-Meteo 天气服务
+```
+
+本关请求的北京坐标是 `39.9042, 116.4074`。请求中只要三项“当前天气”：
+
+```c
+#define WEATHER_API_URL \
+    "http://api.open-meteo.com/v1/forecast?latitude=39.9042&longitude=116.4074" \
+    "&current=temperature_2m%2Cwind_speed_10m%2Cweather_code"
+```
+
+`%2C` 是逗号的 URL 写法，所以它的实际含义是：`temperature_2m,wind_speed_10m,weather_code`。
+
+### 运行与成功标准
+
+```bash
+./switch_code.sh 12 3 --flash
+```
+
+成功日志类似：
+
+```text
+I (....) WEATHER_CLOCK: 已拿到 IP，可以访问网络服务。
+I (....) WEATHER_CLOCK: 网络时间已同步。
+I (....) WEATHER_CLOCK: 北京当前天气：多云，气温 26.4 °C，风速 11.2 km/h
+I (....) WEATHER_CLOCK: 北京时间：2026-08-22 10:30:45
+```
+
+天气会变化，数字和“晴朗/多云/下雨”等文字不保证与示例完全相同。
+
+### JSON 是什么？——带标签的收据
+
+服务器回答大致像这样：
+
+```json
+{
+  "current": {
+    "temperature_2m": 26.4,
+    "wind_speed_10m": 11.2,
+    "weather_code": 2
+  }
+}
+```
+
+不要把 JSON 当成“固定第几行的文字”。它像一张有项目名的收据：先找到 `current` 这一栏，再按名字找 `temperature_2m`、`wind_speed_10m` 和 `weather_code`。
+
+```c
+cJSON *current = cJSON_GetObjectItemCaseSensitive(root, "current");
+cJSON *temperature = cJSON_GetObjectItemCaseSensitive(current, "temperature_2m");
+
+if (!cJSON_IsNumber(temperature)) {
+    ESP_LOGE(TAG, "JSON 字段不完整或类型不对，本次不显示天气。");
+}
+```
+
+为什么多了一步 `cJSON_IsNumber()`？因为服务器可能临时返回错误 JSON、字段可能不存在，或者接口将来改变。直接访问 `temperature->valuedouble` 就像没打开包裹先伸手拿东西，容易崩溃。
+
+每次成功解析后，必须释放整棵 JSON 树：
+
+```c
+cJSON_Delete(root);
+```
+
+### 缓冲区：给快递准备多大的收件箱？
+
+示例准备了 1024 字节的 `s_response_buffer`。HTTP 回答可能分多次到达，`HTTP_EVENT_ON_DATA` 每收到一段就追加；如果总数据超过收件箱，代码会记录错误并放弃本次解析，避免写坏内存。
+
+```c
+if ((size_t)event->data_len > free_space) {
+    s_response_too_large = true;
+    return ESP_FAIL;
+}
+```
+
+### 一个重要的安全边界
+
+这份代码使用 **HTTP**，是为了把“请求—响应—JSON”讲清楚，避免第一次接触网络时同时学习 TLS 证书。
+
+HTTP 内容可能被篡改或窥视。真实产品访问天气、账号、控制指令等服务时，应改用 **HTTPS**，并启用服务器证书校验；不能把本实验的明文 HTTP 当作生产方案。
+
+---
+
+## 12.8 三层理解：为什么物联网要这样分步骤？
+
+### 第一层：把事情一件件做完
+
+- 先连 Wi-Fi；
+- 再等路由器分配 IP；
+- 再对时；
+- 最后请求天气。
+
+每一层失败，都能从串口看到它停在哪一层。
+
+### 第二层：资源有限也要可靠
+
+ESP32 的内存和任务数有限。事件驱动避免空循环占用 CPU；事件组把成功和失败变成明确状态；固定大小缓冲区防止网络数据无限吃内存；检查 JSON 类型避免异常数据让程序访问空指针。
+
+### 第三层：工业产品的选择
+
+| 场景 | 常见做法 | 本关与它的关系 |
+| --- | --- | --- |
+| 一次性取得天气 | HTTPS + REST/HTTP | 本关先学习 HTTP 的核心模型 |
+| 持续上报传感器 | MQTT 长连接 | 下一关会学习 |
+| 用户配置家中 Wi-Fi | SoftAP/蓝牙配网 + NVS | 本关只把密码写在示例宏中 |
+| 远程控制设备 | HTTPS/MQTT + 身份认证和权限 | 不能只凭拿到 IP 就认为安全 |
+
+---
+
+## 12.9 主动回忆：不用看上文，试着回答
+
+1. ESP32 已经显示“Wi-Fi 已启动”，为什么还不能立刻请求天气？
+2. `IP_EVENT_STA_GOT_IP` 说明路由器完成了哪件事？
+3. `TZ=CST-8` 是向服务器请求东八区时间，还是改变本地显示方式？
+4. HTTP 返回 `200` 后，为什么还要检查 `cJSON_IsNumber()`？
+5. 为什么 1024 字节缓冲区满了以后，宁可放弃这次解析也不能继续写？
+
+参考答案：1）还没有 IP；2）分配了网络地址和网络参数；3）改变本地显示方式；4）HTTP 成功不保证字段完整或类型正确；5）继续写会越界并破坏内存。
+
+---
+
+## 12.10 常见问题
+
+| 现象 | 最可能的原因 | 先这样做 |
+| --- | --- | --- |
+| 连续打印“第 x/5 次重连” | 密码、SSID 不对，或热点是 5 GHz | 用手机确认名称和密码；确认热点开启 2.4 GHz |
+| 一直没有“已从路由器拿到 IP” | 路由器拒绝接入、信号太弱或 DHCP 异常 | 把开发板靠近路由器；重启热点；先运行实验 1 单独排查 |
+| 显示已拿到 IP，但 SNTP 超时 | 能进局域网，不代表能访问时间服务器 | 检查路由器是否能上网、是否有访客网络隔离或防火墙限制 |
+| HTTP 请求失败 | DNS、外网、服务器或网络拦截有问题 | 先确认实验 2 能对时；记录完整 `esp_err_to_name` 日志 |
+| 返回 HTTP 不是 200 | 接口地址、网络或服务端暂时异常 | 查看状态码；稍后重试；不要在代码里假装成功 |
+| JSON 字段不完整或类型不对 | 服务端返回内容不是预期天气数据 | 打印/保存响应做分析；不要删除 `cJSON_IsNumber()` 检查 |
+| 程序编译通过，却没看到真实天气 | 没有烧录、没有填写 Wi-Fi 或没连接串口 | 运行 `--flash`，再观察实际串口日志 |
 
 > [!IMPORTANT]
-> **⚠️ 实验前必看**：
-> 打开源码，将 `#define EXAMPLE_ESP_WIFI_SSID` 和 `EXAMPLE_ESP_WIFI_PASS` 改为你身边的 **2.4GHz Wi-Fi 名称和密码**（ESP32 不支持 5GHz 频段 Wi-Fi）。
+> `idf.py build` 通过，**不等于已经在真机上联网成功**。构建只证明源码能被编译和链接；是否拿到 IP、是否能对时、是否能访问天气接口，必须以你自己的开发板串口日志为准。
 
-### 🌟 实验 1 核心代码解析：
+---
 
-```c
-static void event_handler(void* arg, esp_event_base_t event_base,
-                          int32_t event_id, void* event_data)
-{
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect(); // 硬件启动，开始握手
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retry_num < EXAMPLE_ESP_MAXIMUM_RETRY) {
-            esp_wifi_connect(); // 掉线自动重连
-            s_retry_num++;
-        }
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        ESP_LOGI(TAG, "🎉 联网成功！获取到 IP 地址: " IPSTR, IP2STR(&event->ip_info.ip));
-    }
-}
+## 12.11 动手练习
+
+1. **观察断线重连**：实验 1 成功后，临时关掉手机热点或路由器 Wi-Fi。观察重试日志，再恢复网络，思考为什么本例达到 5 次就停止。
+2. **更换城市**：把实验 3 的经纬度改成你所在城市的经纬度。只改 `latitude` 和 `longitude`，先不要修改 JSON 字段名。
+3. **新增一项数据**：阅读天气服务文档，添加一个当前字段，例如 `relative_humidity_2m`。依次完成：修改 URL、查看 JSON、用 `cJSON_IsNumber()` 检查、再打印结果。
+4. **思考题**：如果天气服务突然返回 2 KB 数据，本例会怎样？如果产品需要支持更大的数据，你会增大静态缓冲区，还是改成分段解析？分别有什么代价？
+
+---
+
+## 12.12 本关小结与下一关
+
+你已经完成了一条最小互联网链路：
+
+```text
+Wi-Fi STA → DHCP 获得 IP → SNTP 对时 → HTTP 请求 → JSON 安全解析
 ```
 
----
+下一关会学习 MQTT。HTTP 更像“每次想问就打一次电话”；MQTT 更像“长期保持一个消息频道”，适合设备持续上报状态和接收控制命令。
 
-## 12.6 实战第 2 步：SNTP 自动授时与北京时间实时时钟
-
-连上 Wi-Fi 后，单片机向阿里云 NTP 服务器请求授时，并每秒打印一次标准北京时间！
-
-> 📁 **配套源码文件**：[`code/12_wifi_weather/02_sntp_time_sync.c`](../code/12_wifi_weather/02_sntp_time_sync.c)  
-> ⚡ **一键切换运行**：在终端运行 `./switch_code.sh 12 2 --flash` 即可秒级切换并自动烧录！
-
-```c
-static void sntp_sync_init(void)
-{
-    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "ntp.aliyun.com"); // 阿里云授时中心
-    esp_sntp_init();
-
-    // 设置中国东八区时区 (UTC+8)
-    setenv("TZ", "CST-8", 1);
-    tzset();
-}
-
-// 获取并格式化当前时间
-time_t now;
-struct tm timeinfo;
-time(&now);
-localtime_r(&now, &timeinfo);
-char strftime_buf[64];
-strftime(strftime_buf, sizeof(strftime_buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
-ESP_LOGI(TAG, "🕒 北京时间: %s", strftime_buf);
-```
-
----
-
-## 12.7 实战第 3 步：综合大工程 —— HTTP 实时天气客户端与时钟站
-
-发起 HTTP GET 请求访问开放气象 RESTful API，并使用 `cJSON` 提取温度与风速：
-
-> 📁 **配套源码文件**：[`code/12_wifi_weather/03_http_weather_clock.c`](../code/12_wifi_weather/03_http_weather_clock.c)  
-> ⚡ **一键切换运行**：在终端运行 `./switch_code.sh 12 3 --flash` 即可秒级切换并自动烧录！
-
-```c
-/* HTTP 请求与 cJSON 键值提取 */
-static void parse_weather_json(const char *json_str)
-{
-    cJSON *root = cJSON_Parse(json_str);
-    if (!root) return;
-
-    cJSON *current = cJSON_GetObjectItem(root, "current_weather");
-    if (current) {
-        cJSON *temp = cJSON_GetObjectItem(current, "temperature");
-        cJSON *wind = cJSON_GetObjectItem(current, "windspeed");
-        ESP_LOGI(TAG, "🌡️ 实时气温: %.1f °C, 实时风速: %.1f km/h", 
-                 temp->valuedouble, wind->valuedouble);
-    }
-    cJSON_Delete(root); // 销毁内存
-}
-```
-
----
-
-## 12.8 关卡总结与通关打卡
-
-太棒了！你的 ESP32 已经成功跃入广阔的互联网世界！
-
-### 🏆 核心技能清单回顾：
-* [x] **Wi-Fi STA 联网**：理解 2.4GHz 客户端模式与断线重连容错机制；
-* [x] **事件驱动循环**：掌握 `WIFI_EVENT` 与 `IP_EVENT_STA_GOT_IP` 响应机制；
-* [x] **SNTP 原子钟授时**：掌握时区配置（CST-8）与硬件 RTC 同步；
-* [x] **HTTP Client 与 cJSON**：掌握 RESTful API 调用与 JSON 键值安全提取。
-
----
-
-HTTP 是典型的“一问一答”短连接协议，单片机必须每次主动去问服务器。但在物联网实时控制场景中（比如手机 App 远程遥控开灯、毫秒级传感器报警），HTTP 就显得太笨重了。
-
-在下一关，我们将学习**当今整个物联网产业统治级的长连接通信协议 —— MQTT**！  
-请翻开 [**第 13 章：ESP32 MQTT 协议接入与阿里云 IoT 物联网平台实战**](./13_MQTT协议接入与阿里云IoT实战.md)！
+继续阅读：[第 13 关：ESP32 MQTT 协议接入与阿里云 IoT 实战](./13_MQTT协议接入与阿里云IoT实战.md)。
