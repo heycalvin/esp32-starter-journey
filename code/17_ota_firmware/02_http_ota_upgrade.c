@@ -40,9 +40,9 @@
 #include "esp_app_format.h"
 
 // ⚙️ Wi-Fi 与 OTA 服务器配置（请根据实际环境修改）
-#define WIFI_SSID           "CalvinHome"
-#define WIFI_PASS           "lq8841149XT"
-#define OTA_FIRMWARE_URL    "http://192.168.31.64:8070/firmware.bin"
+#define WIFI_SSID           "Your_WiFi_SSID"
+#define WIFI_PASS           "Your_WiFi_Password"
+#define OTA_FIRMWARE_URL    "http://192.168.1.100:8070/firmware.bin"
 
 #define LED_PIN             GPIO_NUM_27
 static const char *TAG = "EXP2_HTTP_OTA";
