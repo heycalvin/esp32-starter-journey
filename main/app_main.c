@@ -1,275 +1,203 @@
 /**
  * ==============================================================================
- * 🚀 ESP32 物联网实战闯关 —— 第 17 关：OTA 空中固件升级与防变砖回滚
- * 📁 实验 2: HTTP 局域网空中无线拉取固件与流式烧写
+ * 🚀 ESP32 物联网实战闯关 —— 第 18 关：MicroSD/TF 卡挂载与 FATFS 文件系统
+ * 📁 实验 3: TF 卡文件资源树递归扫描器与电子相册资源探针 (File Tree Explorer)
  * ==============================================================================
  * 
  * 📌 【实验目标】
- * 1. 连接 Wi-Fi 路由器，接入局域网；
- * 2. 通过 HTTP 协议拉取电脑端搭建的本地 HTTP 服务器上的 `firmware.bin` 固件；
- * 3. 使用 `esp_https_ota` 高阶组件流式下载并自动写入目标 OTA 分区；
- * 4. 实时计算并打印下载百分比进度，下载完成校验 SHA-256 并自动重启！
- * 
- * 🛠️ 【本地固件服务器搭建指引（电脑端）】
- * 1. 编译生成 bin 固件：idf.py build
- * 2. 进入固件输出目录：cd build
- * 3. 复制生成的 bin 为固件名：cp esp32-start.bin firmware.bin
- * 4. 一键启动极简 HTTP 服务器：python3 -m http.server 8070
- * 5. 在下方代码中将 CONFIG_OTA_FIRMWARE_URL 改为电脑局域网 IP（如 http://192.168.1.100:8070/firmware.bin）
- * 
- * 🔌 【硬件连接】
- * - 板载绿色 LED2: GPIO27 (升级过程中高频快闪指示下载中)
+ * 1. 熟练掌握 POSIX 标准目录遍历 API（opendir、readdir、closedir、stat）；
+ * 2. 递归遍历整张 TF 卡根目录下所有子文件夹与多级文件，绘制出漂亮的树状层级图；
+ * 3. 过滤 Mac/Windows 隐藏系统垃圾文件（如 .Spotlight、.Trashes），防止栈溢出；
+ * 4. 采用独立 8KB 大栈深 FreeRTOS 任务运行深度扫描，彻底规避 Stack Overflow；
+ * 5. 统计并计算每个文件的大小（B、KB、MB）、全盘总文件数与总占用空间！
  * ==============================================================================
  */
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/unistd.h>
+#include <sys/stat.h>
+#include <dirent.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/event_groups.h"
-#include "driver/gpio.h"
-#include "esp_system.h"
+#include "esp_vfs_fat.h"
+#include "sdmmc_cmd.h"
+#include "driver/sdmmc_host.h"
+#include "driver/sdspi_host.h"
+#include "driver/spi_common.h"
 #include "esp_log.h"
-#include "nvs_flash.h"
-#include "esp_wifi.h"
-#include "esp_event.h"
-#include "esp_netif.h"
-#include "esp_ota_ops.h"
-#include "esp_https_ota.h"
-#include "esp_http_client.h"
-#include "esp_app_format.h"
 
-// ⚙️ Wi-Fi 与 OTA 服务器配置（请根据实际环境修改）
-#define WIFI_SSID           "CalvinHome"
-#define WIFI_PASS           "lq8841149XT"
-#define OTA_FIRMWARE_URL    "http://192.168.31.64:8070/firmware.bin"
+#define MOUNT_POINT "/sdcard"
+static const char *TAG = "EXP3_SD_EXPLORER";
 
-#define LED_PIN             GPIO_NUM_27
-static const char *TAG = "EXP2_HTTP_OTA";
+static int s_total_files = 0;
+static int s_total_dirs = 0;
+static uint64_t s_total_bytes = 0;
 
-static EventGroupHandle_t s_wifi_event_group;
-#define WIFI_CONNECTED_BIT  BIT0
-#define WIFI_FAIL_BIT       BIT1
+// 尝试 SDSPI 模式挂载 (作为 SDMMC 兼容通道)
+static esp_err_t try_mount_sdspi(sdmmc_card_t **out_card, const esp_vfs_fat_sdmmc_mount_config_t *mount_config) {
+    ESP_LOGI(TAG, "🔄 正在尝试通过 SPI 兼容模式 (SDSPI) 挂载 TF 卡 (CLK:14, MOSI:15, MISO:2, CS:13)...");
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = SPI2_HOST;
+    host.max_freq_khz = 10000;
 
-static bool s_is_upgrading = false;
-
-/**
- * @brief Wi-Fi 事件回调处理
- */
-static void wifi_event_handler(void* arg, esp_event_base_t event_base,
-                                int32_t event_id, void* event_data) {
-    static int retry_num = 0;
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-        ESP_LOGI(TAG, "📡 正在连接 Wi-Fi: %s ...", WIFI_SSID);
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (retry_num < 5) {
-            esp_wifi_connect();
-            retry_num++;
-            ESP_LOGW(TAG, "⚠️ Wi-Fi 连接断开，正在重试第 %d/5 次...", retry_num);
-        } else {
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-            ESP_LOGE(TAG, "❌ Wi-Fi 连接失败，请检查 SSID/密码！");
-        }
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        ESP_LOGI(TAG, "✅ Wi-Fi 已连接！获取到 IP 地址: " IPSTR, IP2STR(&event->ip_info.ip));
-        retry_num = 0;
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    spi_bus_config_t bus_cfg = {
+        .mosi_io_num = GPIO_NUM_15,
+        .miso_io_num = GPIO_NUM_2,
+        .sclk_io_num = GPIO_NUM_14,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4000,
+    };
+    esp_err_t ret = spi_bus_initialize(host.slot, &bus_cfg, SDSPI_DEFAULT_DMA);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        return ret;
     }
+
+    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot_config.gpio_cs = GPIO_NUM_13;
+    slot_config.host_id = host.slot;
+
+    return esp_vfs_fat_sdspi_mount(MOUNT_POINT, &host, &slot_config, mount_config, out_card);
 }
 
 /**
- * @brief 初始化 Wi-Fi STA 模式
+ * @brief 挂载 TF 卡辅助函数
  */
-static void wifi_init_sta(void) {
-    s_wifi_event_group = xEventGroupCreate();
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
-                                                        ESP_EVENT_ANY_ID,
-                                                        &wifi_event_handler,
-                                                        NULL,
-                                                        NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
-                                                        IP_EVENT_STA_GOT_IP,
-                                                        &wifi_event_handler,
-                                                        NULL,
-                                                        NULL));
-
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = WIFI_SSID,
-            .password = WIFI_PASS,
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-        },
+static bool init_sd_card(sdmmc_card_t **out_card)
+{
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = false,
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024
     };
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
+
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.max_freq_khz = 10000;
+
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.width = 4;
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+    esp_err_t ret = esp_vfs_fat_sdmmc_mount(MOUNT_POINT, &host, &slot_config, &mount_config, out_card);
+    if (ret != ESP_OK) {
+        slot_config.width = 1;
+        ret = esp_vfs_fat_sdmmc_mount(MOUNT_POINT, &host, &slot_config, &mount_config, out_card);
+    }
+    if (ret != ESP_OK) {
+        ret = try_mount_sdspi(out_card, &mount_config);
+    }
+    return (ret == ESP_OK);
 }
 
 /**
- * @brief 执行 OTA 固件拉取与流式烧写任务
+ * @brief 递归扫描目录树并格式化输出（带深度限制与隐藏系统文件过滤）
+ * @param dir_path 当前遍历目录路径
+ * @param depth 递归深度
  */
-static void ota_upgrade_task(void *pvParameter) {
-    ESP_LOGI(TAG, "🚀 开始执行 OTA 固件升级流程...");
-    ESP_LOGI(TAG, "🌐 目标固件 URL: %s", OTA_FIRMWARE_URL);
-
-    // 1. 获取当前运行分区与升级目标分区信息
-    const esp_partition_t *running_partition = esp_ota_get_running_partition();
-    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
-    ESP_LOGI(TAG, "📍 当前运行分区: [%s] (0x%08lX)", running_partition->label, running_partition->address);
-    ESP_LOGI(TAG, "🎯 写入目标分区: [%s] (0x%08lX)", update_partition->label, update_partition->address);
-
-    s_is_upgrading = true;
-
-    // 2. 配置 HTTP 客户端与 OTA 句柄
-    esp_http_client_config_t http_config = {
-        .url = OTA_FIRMWARE_URL,
-        .timeout_ms = 10000,
-        .keep_alive_enable = true,
-    };
-
-    esp_https_ota_config_t ota_config = {
-        .http_config = &http_config,
-    };
-
-    esp_https_ota_handle_t ota_handle = NULL;
-    esp_err_t err = esp_https_ota_begin(&ota_config, &ota_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "❌ OTA 初始化失败 (0x%x)，请检查服务器是否开启或 URL 是否可达！", err);
-        s_is_upgrading = false;
-        vTaskDelete(NULL);
+static void scan_directory_tree(const char *dir_path, int depth)
+{
+    // 防御性保护：限制最大递归深度为 6 层，防止超深目录吃光栈内存
+    if (depth > 6) {
         return;
     }
 
-    // 3. 读取新固件的 App Description 信息并校验
-    esp_app_desc_t new_app_info;
-    err = esp_https_ota_get_img_desc(ota_handle, &new_app_info);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "==========================================================");
-        ESP_LOGI(TAG, "📦 发现新固件: [%s] 版本: [%s]", new_app_info.project_name, new_app_info.version);
-        ESP_LOGI(TAG, "⏰ 固件编译时间: %s %s", new_app_info.date, new_app_info.time);
-        ESP_LOGI(TAG, "==========================================================");
-    } else {
-        ESP_LOGW(TAG, "⚠️ 无法提前读取新固件元数据，继续下载...");
+    DIR *d = opendir(dir_path);
+    if (!d) {
+        return;
     }
 
-    // 4. 流式下载与烧写循环
-    int last_progress = -1;
-    while (1) {
-        err = esp_https_ota_perform(ota_handle);
-        if (err != ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
-            break;
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        // 1. 跳过 "." (当前目录) 与 ".." (上级目录)
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
         }
 
-        // 计算下载进度
-        int total_len = esp_https_ota_get_image_size(ota_handle);
-        int read_len = esp_https_ota_get_image_len_read(ota_handle);
-        if (total_len > 0) {
-            int progress = (read_len * 100) / total_len;
-            if (progress != last_progress && progress % 10 == 0) {
-                last_progress = progress;
-                ESP_LOGI(TAG, "⏬ 固件下载烧写进度: [%d%%] (已下载: %d / 总计: %d 字节)",
-                         progress, read_len, total_len);
+        // 2. 智能过滤 Mac/Windows 系统的隐藏深层索引文件夹（如 .Spotlight-V100、.fseventsd、.Trashes）
+        if (entry->d_name[0] == '.') {
+            continue;
+        }
+
+        // 动态构建完整路径
+        char full_path[384];
+        snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, entry->d_name);
+
+        struct stat st;
+        if (stat(full_path, &st) == 0) {
+            // 生成树状缩进前缀
+            char indent[48] = {0};
+            for (int i = 0; i < depth; i++) {
+                strcat(indent, "  │ ");
+            }
+
+            if (S_ISDIR(st.st_mode)) {
+                s_total_dirs++;
+                ESP_LOGI(TAG, "%s├── 📁 \033[1;33m[%s]\033[0m (文件夹)", indent, entry->d_name);
+                // 递归深入遍历下一级子目录
+                scan_directory_tree(full_path, depth + 1);
+            } else {
+                s_total_files++;
+                s_total_bytes += st.st_size;
+
+                if (st.st_size >= 1024 * 1024) {
+                    float size_mb = (float)st.st_size / (1024.0f * 1024.0f);
+                    ESP_LOGI(TAG, "%s├── 📄 \033[36m%-24s\033[0m \033[90m(%.2f MB)\033[0m",
+                             indent, entry->d_name, size_mb);
+                } else if (st.st_size >= 1024) {
+                    float size_kb = (float)st.st_size / 1024.0f;
+                    ESP_LOGI(TAG, "%s├── 📄 \033[36m%-24s\033[0m \033[90m(%.2f KB)\033[0m",
+                             indent, entry->d_name, size_kb);
+                } else {
+                    ESP_LOGI(TAG, "%s├── 📄 \033[36m%-24s\033[0m \033[90m(%ld Bytes)\033[0m",
+                             indent, entry->d_name, st.st_size);
+                }
             }
         }
     }
 
-    // 5. 校验结果与完成流程
-    if (err == ESP_OK) {
-        err = esp_https_ota_finish(ota_handle);
-        if (err == ESP_OK) {
-            ESP_LOGI(TAG, "🎉 ==========================================================");
-            ESP_LOGI(TAG, "🎉 OTA 升级写入成功！新固件已就绪！");
-            ESP_LOGI(TAG, "🔄 系统将在 3 秒后自动重启并切换至新分区 [%s]...", update_partition->label);
-            ESP_LOGI(TAG, "🎉 ==========================================================");
-            vTaskDelay(pdMS_TO_TICKS(3000));
-            esp_restart();
-        } else {
-            ESP_LOGE(TAG, "❌ OTA 校验与收尾失败: 0x%x", err);
-        }
-    } else {
-        ESP_LOGE(TAG, "❌ OTA 升级传输中断: 0x%x", err);
-        esp_https_ota_abort(ota_handle);
-    }
+    closedir(d);
+}
 
-    s_is_upgrading = false;
+/**
+ * @brief 独立高栈深扫描任务（8KB 栈空间，彻底免疫栈溢出）
+ */
+static void explorer_task(void *pvParam)
+{
+    s_total_files = 0;
+    s_total_dirs = 0;
+    s_total_bytes = 0;
+
+    ESP_LOGI(TAG, "🔍 正在对 TF 卡进行深度递归扫描...\n");
+    ESP_LOGI(TAG, "📂 [TF 卡根目录: %s]", MOUNT_POINT);
+
+    scan_directory_tree(MOUNT_POINT, 0);
+
+    ESP_LOGI(TAG, "\n==========================================================");
+    ESP_LOGI(TAG, "📊 【TF 卡全盘资源扫描统计清单】");
+    ESP_LOGI(TAG, "==========================================================");
+    ESP_LOGI(TAG, "📁 文件夹总数 (Directories) : %d 个", s_total_dirs);
+    ESP_LOGI(TAG, "📄 文件总数 (Files)         : %d 个", s_total_files);
+    ESP_LOGI(TAG, "💾 扫描文件总大小 (Total)    : %.2f KB (约 %.2f MB)",
+             (float)s_total_bytes / 1024.0f,
+             (float)s_total_bytes / (1024.0f * 1024.0f));
+    ESP_LOGI(TAG, "==========================================================");
+
     vTaskDelete(NULL);
 }
 
-void app_main(void) {
-    // 1. 初始化 NVS
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
+void app_main(void)
+{
+    ESP_LOGI(TAG, "==========================================================");
+    ESP_LOGI(TAG, "   🌲 Level 18 实验 3：TF 卡全盘目录树与资源浏览器        ");
+    ESP_LOGI(TAG, "==========================================================");
 
-    // 2. 初始化 LED2 指示灯
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << LED_PIN),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&io_conf);
-    gpio_set_level(LED_PIN, 0);
-
-    const esp_app_desc_t *app_desc = esp_app_get_description();
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    ESP_LOGI(TAG, "🌟 当前运行固件版本: [%s], 分区: [%s]", app_desc->version, running ? running->label : "Unknown");
-
-    // 3. 防变砖安全确认：若当前固件处于待自检状态 (PENDING_VERIFY)，必须先确认健康才能允许下次 OTA
-    esp_ota_img_states_t ota_state;
-    if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
-        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-            ESP_LOGI(TAG, "🟢 检测到当前固件处于待验证状态 (PENDING_VERIFY)，主动标记为有效 (Valid) 并取消回滚！");
-            esp_ota_mark_app_valid_cancel_rollback();
-        }
+    sdmmc_card_t *card = NULL;
+    if (!init_sd_card(&card)) {
+        ESP_LOGE(TAG, "❌ TF 卡挂载失败！请插入 MicroSD 卡后重试！");
+        return;
     }
 
-    // 4. 启动 Wi-Fi
-    wifi_init_sta();
-
-
-    // 等待 Wi-Fi 连接成功
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                           pdFALSE,
-                                           pdFALSE,
-                                           portMAX_DELAY);
-
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "🎉 网络畅通，5 秒后启动 OTA 空中升级任务...");
-        vTaskDelay(pdMS_TO_TICKS(5000));
-        xTaskCreate(&ota_upgrade_task, "ota_task", 8192, NULL, 5, NULL);
-    } else {
-        ESP_LOGE(TAG, "❌ 网络连接失败，无法启动 OTA 升级任务。");
-    }
-
-    // 4. 指示灯心跳主循环
-    while (1) {
-        if (s_is_upgrading) {
-            // 升级中：快闪指示（100ms）
-            gpio_set_level(LED_PIN, 1);
-            vTaskDelay(pdMS_TO_TICKS(100));
-            gpio_set_level(LED_PIN, 0);
-            vTaskDelay(pdMS_TO_TICKS(100));
-        } else {
-            // 平常状态：慢闪呼吸（1s）
-            gpio_set_level(LED_PIN, 1);
-            vTaskDelay(pdMS_TO_TICKS(200));
-            gpio_set_level(LED_PIN, 0);
-            vTaskDelay(pdMS_TO_TICKS(800));
-        }
-    }
+    // 启动独立高栈深扫描任务 (8192 字节)，确保多层递归安全
+    xTaskCreate(&explorer_task, "explorer_task", 8192, NULL, 5, NULL);
 }
