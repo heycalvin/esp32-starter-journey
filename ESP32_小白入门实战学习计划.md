@@ -202,14 +202,14 @@
   3. **广播群控与“一呼百应” (Broadcast Group Control)**：使用广播 MAC `FF:FF:FF:FF:FF:FF`，一键广播触发周围所有 ESP32 从机同步协同动作。
 - **核心知识**：IEEE 802.11 Vendor Action Frame 本质、免路由 0ms 建连握手、+20dBm 满血功放 vs 1Mbps DSSS 降速增敏物理原理、Peer 对端通讯录管理、儿童对讲机极简硬件架构与 600mAh 电池续航账本。
 
-#### 第 16 关：ESP32 Web Server 网页中控、mDNS 本地域名与 AP 强制门户配网 📝 *[新增 🌟 / 连载中]*
-- [ ] **打卡目标**：掌握嵌入式 Web 开发，实现免装 App 浏览器直控与热点弹窗配网（Captive Portal）。
-- **涉及技术**：`esp_http_server` + mDNS 局域网服务发现 + Wi-Fi AP 模式 + DNS 劫持
+#### 第 16 关：ESP32 Web Server 网页中控、mDNS 本地域名与 AP 强制门户配网 🏆 *[已通关]*
+- [x] **打卡目标**：掌握嵌入式 Web 开发，实现免装 App 浏览器直控与热点弹窗配网（Captive Portal）。
+- **涉及技术**：`esp_http_server` + mDNS 局域网服务发现 + Wi-Fi APSTA 双模 + UDP 53 DNS 劫持 + NVS 持久化
 - **实验内容**：
-  1. **局域网微型 Web 服务器**：开启 HTTP Server，手机/电脑访问板载 IP，网页渲染控制面板实时开关 LED 与查看传感器。
-  2. **mDNS 本地域名解析**：配置设备域名为 `esp32.local`，免查 IP 浏览器直接通过域名秒级直达。
-  3. **AP 强制门户配网 (Captive Portal)**：未配网时自动开热点，手机连上自动弹窗输入 Wi-Fi 密码并保存至 NVS。
-- **核心知识**：嵌入式 HTTP GET/POST 路由分发、RESTful API、mDNS 服务注册、DNS 劫持弹窗原理、HTML/CSS 嵌入式打包。
+  1. **局域网微型 Web 服务器**：开启 HTTP Server，浏览器访问板载 IP，前后端分离控制面板实时开关 LED2 并轮询运行状态。
+  2. **mDNS 本地域名解析与零配置直达**：配置设备域名为 `esp32.local`，免查 IP 浏览器直接通过域名秒级直达。
+  3. **商业级全生命周期综合大工程**：APSTA 模式空中扫描周边 Wi-Fi ➔ 手机自动弹窗下拉点选 ➔ 保存 NVS ➔ 自动切 STA 联网 ➔ 倒计时自动跳转 `http://esp32.local` 中控台 ➔ 长按 SW3 出厂重置。
+- **核心知识**：嵌入式 HTTP GET/POST 路由分发、RESTful API、mDNS 多播服务广播、UDP 53 DNS 劫持自动弹窗机制、APSTA 混合扫描、NVS Wi-Fi 凭证安全持久化。
 
 ---
 
