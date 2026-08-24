@@ -183,14 +183,15 @@
   3. **手机远程控制中枢与双向 ACK**：手机/MQTTX 发送 JSON 控制指令（`set_led` / `get_status` / `reboot`），ESP32 执行并立即回传 ACK 确认报文。
 - **核心知识**：MQTT 发布/订阅模型（Pub/Sub）、QoS 服务质量、快递代收驿站生动比喻、断线自动重连、公共 Broker 机制、三元组与物模型商业云平台演进。
 
-#### 第 14 关：ESP32 BLE 低功耗蓝牙 GATT 广播与手机 App 透传控制 📝 *[进行中]*
-- [ ] **打卡目标**：掌握低功耗蓝牙通信，用手机独立 App（iOS / Android LightBlue）免配网近场控制开发板。
+#### 第 14 关：ESP32 BLE 低功耗蓝牙 GATT 广播与手机 App 透传控制 🏆 *[已通关]*
+- [x] **打卡目标**：掌握低功耗蓝牙通信，用手机独立 App（iOS / Android LightBlue）免配网近场控制开发板。
 - **涉及协议**：BLE GATT 协议栈（Bluedroid）+ 手机蓝牙 App（LightBlue / nRF Connect）
 - **实验内容**：
-  1. **BLE 广播与手机扫描发现**：配置 ESP32 为 BLE 外设，广播自定义设备名称（`ESP32-Journey-Beacon`）。
-  2. **GATT Server 服务与特征值读写**：搭建 GATT Server，创建自定义 Service 与读写特征值（`0x00FF` / `0xFF01`）。
-  3. **手机蓝牙遥控器与按键 Notify 推送**：手机写入控制板载 LED2，板载按键 SW3 触发主动 Notify 弹射推送至手机。
-- **核心知识**：BLE 广播包格式（Advertising）、GATT 树状架构（Service / Characteristic）、UUID 规则、Read/Write/Notify 机制、手机端蓝牙透视交互。
+  1. **BLE 广播与手机扫描发现**：配置 ESP32 为 BLE 外设，广播自定义设备名称（`ESP32-Journey-Beacon`），手机秒级搜索与 RSSI/dBm 信号解析。
+  2. **自定义广播包与动态温湿度信标 (主包直出 VS 62字节双包扩容)**：主包直出与扫描响应包扩容双模式自由切换，突破 31 字节极限，动态刷新温湿度广播。
+  3. **GATT Server 服务与特征值读写**：搭建 GATT 专柜树，创建自定义 Service 与读写特征值（`0x00FF` / `0xFF01`），手机写指令开关 LED2。
+  4. **手机蓝牙遥控器与按键 Notify / Indicate 主动推送**：手机写入控制板载绿色 LED2，板载按键 SW3 触发主动 Notify 弹射推送与 Indicate 顺丰签收模式，主动更新连接参数彻底防断连。
+- **核心知识**：BLE 广播包格式（Advertising）、31字节预算表、Scan Response 扩容、GATT 百货商场模型、16位短UUID vs 128位UUID4、Read/Write/Notify/Indicate 四大交互动作、`rsn 0x13` 断连原理与连接参数保活心跳。
 
 #### 第 15 关：ESP-NOW 超低延迟私有局域网通信与双机遥控对射实战 📝 *[新增 🌟 / 连载中]*
 - [ ] **打卡目标**：掌握乐鑫独家 P2P 无线通信技术，实现两块板子免路由器毫秒级双机对射遥控与广播群控。
