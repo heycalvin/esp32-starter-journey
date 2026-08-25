@@ -62,14 +62,17 @@ function List-Experiments {
         @{ Dir="08_i2c_dht11"; Title="第 08 关: I2C 通信总线与 DHT11 温湿度" },
         @{ Dir="09_nvs_storage"; Title="第 09 关: NVS 存储与 Flash 偏好设置" },
         @{ Dir="10_st7789_display"; Title="第 10 关: ST7789 彩屏与几何图形渲染" },
-        @{ Dir="11_lvgl_touch"; Title="第 11 关: LVGL 图形框架与电容触摸" },
+        @{ Dir="11_lvgl_touch"; Title="第 11 关: LVGL 图形框架、电容触摸与字库适配" },
         @{ Dir="12_wifi_weather"; Title="第 12 关: WiFi 联网与 HTTP 天气时钟" },
         @{ Dir="13_mqtt_iot"; Title="第 13 关: MQTT 物联网通信与手机远程控制" },
         @{ Dir="14_ble_gatt"; Title="第 14 关: BLE 蓝牙广播与手机透传遥控" },
-        @{ Dir="15_sdcard_fatfs"; Title="第 15 关: TF 卡 SDIO 驱动与 FatFS 文件系统" },
-        @{ Dir="16_low_power_deepsleep"; Title="第 16 关: 低功耗电源管理与 Deep-sleep 休眠" },
-        @{ Dir="17_software_architecture"; Title="第 17 关: 嵌入式分层架构与事件总线" },
-        @{ Dir="18_final_station_hub"; Title="第 18 关: 桌面智能气象站与物联网超级中控台" }
+        @{ Dir="15_espnow_remote"; Title="第 15 关: ESP-NOW 超低延迟私有通信与双机遥控" },
+        @{ Dir="16_web_server_portal"; Title="第 16 关: Web Server 网页中控与 AP 门户配网" },
+        @{ Dir="17_ota_firmware"; Title="第 17 关: OTA 空中无线升级与 A/B 分区防变砖" },
+        @{ Dir="18_sdcard_fatfs"; Title="第 18 关: TF 卡 SDIO 驱动与 FatFS 文件系统" },
+        @{ Dir="19_low_power_deepsleep"; Title="第 19 关: 低功耗电源管理与 Deep-sleep 休眠" },
+        @{ Dir="20_software_architecture"; Title="第 20 关: 嵌入式分层架构、事件总线与看门狗" },
+        @{ Dir="21_final_station_hub"; Title="第 21 关: 桌面智能气象站与物联网超级中控台" }
     )
 
     foreach ($ch in $chapters) {
@@ -78,21 +81,43 @@ function List-Experiments {
         Write-Host "  (目录: code/$($ch.Dir))" -ForegroundColor Gray
 
         if (Test-Path $chPath) {
-            $files = Get-ChildItem -Path $chPath -Filter "*.c" | Sort-Object Name
-            $idx = 1
-            foreach ($f in $files) {
-                $firstLine = ""
-                if (Test-Path $f.FullName) {
-                    $content = Get-Content -Path $f.FullName -TotalCount 10
-                    $match = $content | Where-Object { $_ -match "🌟" } | Select-Object -First 1
-                    if ($match) { $firstLine = $match.Trim() }
+            # 1. 先检查是否包含子工程目录 (如 01_bsp_decoupling, 02_fsm_state_machine)
+            $subExpDirs = Get-ChildItem -Path $chPath -Directory | Where-Object { $_.Name -match '^\d{2}_' } | Sort-Object Name
+            if ($subExpDirs -and $subExpDirs.Count -gt 0) {
+                $idx = 1
+                foreach ($sd in $subExpDirs) {
+                    $firstLine = ""
+                    $entryFile = Join-Path $sd.FullName "app_main.c"
+                    if (Test-Path $entryFile) {
+                        $content = Get-Content -Path $entryFile -TotalCount 10
+                        $match = $content | Where-Object { $_ -match "🌟|🚀|📁" } | Select-Object -First 1
+                        if ($match) { $firstLine = $match.Trim() }
+                    }
+                    $shortPrefix = $ch.Dir.Substring(0, 2)
+                    Write-Host "   [" -NoNewline
+                    Write-Host "$shortPrefix $idx" -ForegroundColor Yellow -NoNewline
+                    Write-Host "] 📁 $($sd.Name)/  " -NoNewline
+                    Write-Host "$firstLine" -ForegroundColor DarkGray
+                    $idx++
                 }
-                $shortPrefix = $ch.Dir.Substring(0, 2)
-                Write-Host "   [" -NoNewline
-                Write-Host "$shortPrefix $idx" -ForegroundColor Yellow -NoNewline
-                Write-Host "] $($f.Name)  " -NoNewline
-                Write-Host "$firstLine" -ForegroundColor DarkGray
-                $idx++
+            } else {
+                # 2. 标准单文件列表
+                $files = Get-ChildItem -Path $chPath -Filter "*.c" | Sort-Object Name
+                $idx = 1
+                foreach ($f in $files) {
+                    $firstLine = ""
+                    if (Test-Path $f.FullName) {
+                        $content = Get-Content -Path $f.FullName -TotalCount 10
+                        $match = $content | Where-Object { $_ -match "🌟|🚀|📁" } | Select-Object -First 1
+                        if ($match) { $firstLine = $match.Trim() }
+                    }
+                    $shortPrefix = $ch.Dir.Substring(0, 2)
+                    Write-Host "   [" -NoNewline
+                    Write-Host "$shortPrefix $idx" -ForegroundColor Yellow -NoNewline
+                    Write-Host "] $($f.Name)  " -NoNewline
+                    Write-Host "$firstLine" -ForegroundColor DarkGray
+                    $idx++
+                }
             }
         }
         Write-Host ""
@@ -143,39 +168,71 @@ if (-not $matchDirs -or $matchDirs.Count -eq 0) {
 }
 
 $targetDir = $matchDirs[0].FullName
-$expFiles = Get-ChildItem -Path $targetDir -Filter "*.c" | Sort-Object Name
-if (-not $expFiles -or $expFiles.Count -eq 0) {
-    Write-Host "`n❌ 错误：目录 $($matchDirs[0].Name) 下没有 .c 源码文件！" -ForegroundColor Red
-    exit 1
-}
-
 $paddedExp = "{0:D2}" -f $expNum
-$matchedByPrefix = $expFiles | Where-Object { $_.Name -like "${paddedExp}_*.c" }
 
-if ($matchedByPrefix -and $matchedByPrefix.Count -gt 0) {
-    $targetSrc = $matchedByPrefix[0].FullName
-} elseif ($expNum -le $expFiles.Count -and $expNum -ge 1) {
-    $targetSrc = $expFiles[$expNum - 1].FullName
-} else {
-    Write-Host "`n❌ 错误：第 $chNum 关未找到编号为 $expNum 的实验！" -ForegroundColor Red
-    Write-Host "可用实验文件："
-    foreach ($f in $expFiles) {
-        Write-Host "  - $($f.Name)"
+# 3. 先彻底清理 main 目录下的历史残留子文件夹 (确保工作区 100% 纯净)
+$subDirsToClean = @("bsp", "services", "app", "ui", "components", "events")
+foreach ($d in $subDirsToClean) {
+    $p = Join-Path $ProjectRoot "main\$d"
+    if (Test-Path $p) {
+        Remove-Item -Path $p -Recurse -Force -ErrorAction SilentlyContinue
     }
-    exit 1
 }
-Copy-Item -Path $targetSrc -Destination $TargetMain -Force
 
-$relSrc = $targetSrc.Replace($ProjectRoot, "").TrimStart("\/")
-Write-Host "=================================================================" -ForegroundColor Green
-Write-Host "✅ 成功切换示例代码！" -ForegroundColor Green
-Write-Host "   源文件: " -NoNewline
-Write-Host "$relSrc" -ForegroundColor Yellow
-Write-Host "   目标位: " -NoNewline
-Write-Host "main/app_main.c" -ForegroundColor Cyan
-Write-Host "=================================================================" -ForegroundColor Green
+# 4. 判断目标实验是“子工程目录”还是“单个 .c 源码文件”
+$matchSubDir = Get-ChildItem -Path $targetDir -Directory | Where-Object { $_.Name -like "${paddedExp}_*" }
+$isDirProject = ($matchSubDir -and $matchSubDir.Count -gt 0)
 
-# 检查是否需要编译或烧录
+if ($isDirProject) {
+    # ── 模式 A: 复制整个子工程目录到 main/ ──
+    $expDir = $matchSubDir[0].FullName
+    Get-ChildItem -Path $expDir | ForEach-Object {
+        if ($_.Name -eq "partitions.csv") {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $ProjectRoot "partitions.csv") -Force
+        } elseif ($_.PSIsContainer) {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $ProjectRoot "main\$($_.Name)") -Recurse -Force
+        } else {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $ProjectRoot "main\$($_.Name)") -Force
+        }
+    }
+    $relSrc = $expDir.Replace($ProjectRoot, "").TrimStart("\/")
+    Write-Host "=================================================================" -ForegroundColor Green
+    Write-Host "✅ 成功切换多文件模块化工程！" -ForegroundColor Green
+    Write-Host "   源工程: " -NoNewline
+    Write-Host "$relSrc" -ForegroundColor Yellow
+    Write-Host "   目标位: " -NoNewline
+    Write-Host "main/ [包含独立分层组件]" -ForegroundColor Cyan
+    Write-Host "=================================================================" -ForegroundColor Green
+} else {
+    # ── 模式 B: 标准单文件切换 ──
+    $expFiles = Get-ChildItem -Path $targetDir -Filter "*.c" | Sort-Object Name
+    if (-not $expFiles -or $expFiles.Count -eq 0) {
+        Write-Host "`n❌ 错误：第 $chNum 关未找到编号为 $expNum 的实验或子工程！" -ForegroundColor Red
+        exit 1
+    }
+
+    $matchedByPrefix = $expFiles | Where-Object { $_.Name -like "${paddedExp}_*.c" }
+    if ($matchedByPrefix -and $matchedByPrefix.Count -gt 0) {
+        $targetSrc = $matchedByPrefix[0].FullName
+    } elseif ($expNum -le $expFiles.Count -and $expNum -ge 1) {
+        $targetSrc = $expFiles[$expNum - 1].FullName
+    } else {
+        Write-Host "`n❌ 错误：第 $chNum 关未找到编号为 $expNum 的实验！" -ForegroundColor Red
+        exit 1
+    }
+
+    Copy-Item -Path $targetSrc -Destination $TargetMain -Force
+    $relSrc = $targetSrc.Replace($ProjectRoot, "").TrimStart("\/")
+    Write-Host "=================================================================" -ForegroundColor Green
+    Write-Host "✅ 成功切换单文件示例代码！" -ForegroundColor Green
+    Write-Host "   源文件: " -NoNewline
+    Write-Host "$relSrc" -ForegroundColor Yellow
+    Write-Host "   目标位: " -NoNewline
+    Write-Host "main/app_main.c" -ForegroundColor Cyan
+    Write-Host "=================================================================" -ForegroundColor Green
+}
+
+# 5. 检查是否需要编译或烧录
 if ($actionFlag -eq "--build" -or $actionFlag -eq "-b") {
     Write-Host "`n🔨 正在执行编译 (idf.py build)..." -ForegroundColor Cyan
     idf.py build
@@ -183,3 +240,4 @@ if ($actionFlag -eq "--build" -or $actionFlag -eq "-b") {
     Write-Host "`n⚡ 正在执行烧录与串口监视 (idf.py flash monitor)..." -ForegroundColor Cyan
     idf.py flash monitor
 }
+

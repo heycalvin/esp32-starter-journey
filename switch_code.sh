@@ -67,14 +67,30 @@ function list_experiments() {
 
         echo -e "\033[1;36m▶ ${title}\033[0m  (目录: code/${dir_name})"
         if [ -d "${ch_path}" ]; then
-            local exp_files=($(find "${ch_path}" -maxdepth 1 -name "*.c" | sort))
-            local idx=1
-            for file in "${exp_files[@]}"; do
-                local basename=$(basename "${file}")
-                local first_line=$(grep -m 1 "🌟" "${file}" || echo "")
-                echo -e "   [\033[33m${dir_name:0:2} ${idx}\033[0m] ${basename}  \033[90m${first_line}\033[0m"
-                ((idx++))
-            done
+            # 1. 先检查是否包含子工程目录 (如 01_bsp_decoupling, 02_fsm_state_machine)
+            local sub_dirs=($(find "${ch_path}" -maxdepth 1 -mindepth 1 -type d -name "[0-9][0-9]_*" | sort))
+            if [ ${#sub_dirs[@]} -gt 0 ]; then
+                local idx=1
+                for sdir in "${sub_dirs[@]}"; do
+                    local sname=$(basename "${sdir}")
+                    local first_line=""
+                    if [ -f "${sdir}/app_main.c" ]; then
+                        first_line=$(grep -m 1 -E "🌟|🚀|📁" "${sdir}/app_main.c" || echo "")
+                    fi
+                    echo -e "   [\033[33m${dir_name:0:2} ${idx}\033[0m] 📁 ${sname}/  \033[90m${first_line}\033[0m"
+                    ((idx++))
+                done
+            else
+                # 2. 标准单文件列表
+                local exp_files=($(find "${ch_path}" -maxdepth 1 -name "*.c" | sort))
+                local idx=1
+                for file in "${exp_files[@]}"; do
+                    local basename=$(basename "${file}")
+                    local first_line=$(grep -m 1 -E "🌟|🚀|📁" "${file}" || echo "")
+                    echo -e "   [\033[33m${dir_name:0:2} ${idx}\033[0m] ${basename}  \033[90m${first_line}\033[0m"
+                    ((idx++))
+                done
+            fi
         fi
         echo ""
     done
@@ -104,68 +120,61 @@ if [ -z "${MATCH_DIR}" ] || [ ! -d "${MATCH_DIR}" ]; then
     exit 1
 fi
 
-# 寻找对应的实验文件
-EXP_FILES=($(find "${MATCH_DIR}" -maxdepth 1 -name "*.c" | sort))
-TOTAL_EXPS=${#EXP_FILES[@]}
+# 清理 main/ 目录下的历史残留分层子目录 (bsp, services, ui, app, components, events)
+rm -rf "${PROJECT_ROOT}/main/bsp" "${PROJECT_ROOT}/main/services" "${PROJECT_ROOT}/main/ui" "${PROJECT_ROOT}/main/app" "${PROJECT_ROOT}/main/components" "${PROJECT_ROOT}/main/events"
 
-if [ "${TOTAL_EXPS}" -eq 0 ]; then
-    echo -e "\033[31m❌ 错误：目录 ${MATCH_DIR} 下没有 .c 源码文件！\033[0m"
-    exit 1
-fi
+PADDED_EXP=$(printf "%02d" "$EXP_NUM" 2>/dev/null || echo "$EXP_NUM")
 
-# 根据实验号查找
-TARGET_SRC=""
-if [ -n "$2" ] && [[ "$2" =~ ^[0-9]+$ ]]; then
-    PADDED_EXP=$(printf "%02d" "$2" 2>/dev/null || echo "$2")
-    MATCHED_BY_PREFIX=$(find "${MATCH_DIR}" -maxdepth 1 -name "${PADDED_EXP}_*.c" | head -n 1)
-    
-    if [ -n "${MATCHED_BY_PREFIX}" ] && [ -f "${MATCHED_BY_PREFIX}" ]; then
-        TARGET_SRC="${MATCHED_BY_PREFIX}"
-    elif [ "$2" -le "${TOTAL_EXPS}" ] && [ "$2" -ge 1 ]; then
-        TARGET_SRC="${EXP_FILES[$(( $2 - 1 ))]}"
-    else
-        echo -e "\033[31m❌ 错误：第 ${CH_NUM} 关未找到编号为 $2 的实验！\033[0m"
-        echo "可用实验文件："
-        for f in "${EXP_FILES[@]}"; do
-            echo "  - $(basename "$f")"
-        done
+# 判断目标实验是“子工程目录”还是“单个 .c 源码文件”
+MATCH_SUB_DIR=$(find "${MATCH_DIR}" -maxdepth 1 -type d -name "${PADDED_EXP}_*" | head -n 1)
+
+if [ -n "${MATCH_SUB_DIR}" ] && [ -d "${MATCH_SUB_DIR}" ]; then
+    # ── 模式 A: 复制整个子工程目录到 main/ ──
+    for item in "${MATCH_SUB_DIR}"/*; do
+        local item_name=$(basename "$item")
+        if [ "$item_name" == "partitions.csv" ]; then
+            cp -f "$item" "${PROJECT_ROOT}/partitions.csv"
+        elif [ -d "$item" ]; then
+            cp -rf "$item" "${PROJECT_ROOT}/main/"
+        else
+            cp -f "$item" "${PROJECT_ROOT}/main/"
+        fi
+    done
+
+    REL_SRC="${MATCH_SUB_DIR#$PROJECT_ROOT/}"
+    echo "================================================================="
+    echo -e "\033[32m✅ 成功切换多文件模块化工程！\033[0m"
+    echo -e "   源工程: \033[33m${REL_SRC}\033[0m"
+    echo -e "   目标位: \033[36mmain/ [包含独立分层组件]\033[0m"
+    echo "================================================================="
+else
+    # ── 模式 B: 标准单文件切换 ──
+    EXP_FILES=($(find "${MATCH_DIR}" -maxdepth 1 -name "*.c" | sort))
+    TOTAL_EXPS=${#EXP_FILES[@]}
+
+    if [ "${TOTAL_EXPS}" -eq 0 ]; then
+        echo -e "\033[31m❌ 错误：第 ${CH_NUM} 关未找到编号为 ${EXP_NUM} 的实验或子工程！\033[0m"
         exit 1
     fi
-else
-    # 默认选第 1 个实验
-    TARGET_SRC="${EXP_FILES[0]}"
-fi
 
-# 清理 main/ 目录下的分层子目录 (bsp, services, ui, app)，防止跨关卡污染
-rm -rf "${PROJECT_ROOT}/main/bsp" "${PROJECT_ROOT}/main/services" "${PROJECT_ROOT}/main/ui" "${PROJECT_ROOT}/main/app"
-
-# 检查是否为多文件模块化架构目录（如第 20、21 关）
-if [ -d "${MATCH_DIR}/bsp" ] || [ -d "${MATCH_DIR}/services" ] || [ -d "${MATCH_DIR}/ui" ] || [ -d "${MATCH_DIR}/app" ]; then
-    echo -e "📦 检测到多文件模块化工程架构，正在同步分层组件..."
-    [ -d "${MATCH_DIR}/bsp" ] && cp -r "${MATCH_DIR}/bsp" "${PROJECT_ROOT}/main/"
-    [ -d "${MATCH_DIR}/services" ] && cp -r "${MATCH_DIR}/services" "${PROJECT_ROOT}/main/"
-    [ -d "${MATCH_DIR}/ui" ] && cp -r "${MATCH_DIR}/ui" "${PROJECT_ROOT}/main/"
-    [ -d "${MATCH_DIR}/app" ] && cp -r "${MATCH_DIR}/app" "${PROJECT_ROOT}/main/"
-    
-    if [ -f "${MATCH_DIR}/main/app_main.c" ]; then
-        cp "${MATCH_DIR}/main/app_main.c" "${TARGET_MAIN}"
-    elif [ -f "${MATCH_DIR}/app_main.c" ]; then
-        cp "${MATCH_DIR}/app_main.c" "${TARGET_MAIN}"
-    elif [ -n "${TARGET_SRC}" ]; then
-        cp "${TARGET_SRC}" "${TARGET_MAIN}"
+    MATCHED_BY_PREFIX=$(find "${MATCH_DIR}" -maxdepth 1 -name "${PADDED_EXP}_*.c" | head -n 1)
+    if [ -n "${MATCHED_BY_PREFIX}" ] && [ -f "${MATCHED_BY_PREFIX}" ]; then
+        TARGET_SRC="${MATCHED_BY_PREFIX}"
+    elif [ "$EXP_NUM" -le "${TOTAL_EXPS}" ] && [ "$EXP_NUM" -ge 1 ]; then
+        TARGET_SRC="${EXP_FILES[$(( EXP_NUM - 1 ))]}"
+    else
+        echo -e "\033[31m❌ 错误：第 ${CH_NUM} 关未找到编号为 ${EXP_NUM} 的实验！\033[0m"
+        exit 1
     fi
-    REL_SRC="${MATCH_DIR#${PROJECT_ROOT}/} (模块化多文件工程)"
-else
-    # 执行标准单文件切换
-    cp "${TARGET_SRC}" "${TARGET_MAIN}"
-    REL_SRC="${TARGET_SRC#${PROJECT_ROOT}/}"
-fi
 
-echo -e "\033[32m=================================================================\033[0m"
-echo -e "\033[32m✅ 成功切换示例代码！\033[0m"
-echo -e "   源目录/文件: \033[1;33m${REL_SRC}\033[0m"
-echo -e "   目标工程位: \033[1;36mmain/ [app_main.c + 分层组件]\033[0m"
-echo -e "\033[32m=================================================================\033[0m"
+    cp "${TARGET_SRC}" "${TARGET_MAIN}"
+    REL_SRC="${TARGET_SRC#$PROJECT_ROOT/}"
+    echo "================================================================="
+    echo -e "\033[32m✅ 成功切换单文件示例代码！\033[0m"
+    echo -e "   源文件: \033[33m${REL_SRC}\033[0m"
+    echo -e "   目标位: \033[36mmain/app_main.c\033[0m"
+    echo "================================================================="
+fi
 
 # 检查后续指令 (--build / --flash)
 for arg in "$@"; do
