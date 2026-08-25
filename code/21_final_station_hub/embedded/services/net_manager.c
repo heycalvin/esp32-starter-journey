@@ -5,6 +5,7 @@
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_sntp.h"
+#include "nvs_flash.h"
 #include "mqtt_client.h"
 #include "esp_log.h"
 #include "sys_event_bus.h"
@@ -15,6 +16,19 @@ static bool s_wifi_connected = false;
 static bool s_mqtt_connected = false;
 static char s_ip_addr[24] = "192.168.4.1";
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
+
+static esp_err_t net_manager_init_nvs(void)
+{
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS 分区需要重建，正在擦除并重新初始化");
+        ret = nvs_flash_erase();
+        if (ret == ESP_OK) {
+            ret = nvs_flash_init();
+        }
+    }
+    return ret;
+}
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
@@ -75,6 +89,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
 esp_err_t net_manager_init(const char *ssid, const char *password)
 {
+    ESP_ERROR_CHECK(net_manager_init_nvs());
     ESP_ERROR_CHECK(esp_netif_init());
     esp_netif_create_default_wifi_sta();
 
