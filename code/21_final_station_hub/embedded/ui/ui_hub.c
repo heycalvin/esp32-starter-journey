@@ -64,9 +64,9 @@ static void on_album_next_clicked(lv_event_t *e)
 {
     int count = file_reader_get_photo_count();
     s_current_photo_idx = (s_current_photo_idx + 1) % count;
-    char path[64];
+    char path[280];
     file_reader_get_photo_path(s_current_photo_idx, path, sizeof(path));
-    char buf[128];
+    char buf[320];
     snprintf(buf, sizeof(buf), "[Photo %d/%d]\n%s", s_current_photo_idx + 1, count, path);
     lv_label_set_text(s_album_label, buf);
 }

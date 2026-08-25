@@ -12,7 +12,7 @@ static const char *TAG = "FILE_READER";
 #define PAGE_BYTES_LEN  160 // 每页字符数
 
 static int s_photo_count = 0;
-static char s_photo_names[16][64];
+static char s_photo_names[16][280];
 
 esp_err_t file_reader_init(void)
 {
