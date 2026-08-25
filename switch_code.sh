@@ -61,34 +61,43 @@ function list_experiments() {
     )
 
     for entry in "${chapters[@]}"; do
-        local dir_name="${entry%%:*}"
+        local ch_dir="${entry%%:*}"
         local title="${entry##*:}"
-        local ch_path="${CODE_DIR}/${dir_name}"
+        local ch_path="${CODE_DIR}/${ch_dir}"
 
-        echo -e "\033[1;36m▶ ${title}\033[0m  (目录: code/${dir_name})"
+        echo -e "\033[1;36m▶ ${title}\033[0m  (目录: code/${ch_dir})"
         if [ -d "${ch_path}" ]; then
-            # 1. 先检查是否包含子工程目录 (如 01_bsp_decoupling, 02_fsm_state_machine)
-            local sub_dirs=($(find "${ch_path}" -maxdepth 1 -mindepth 1 -type d -name "[0-9][0-9]_*" | sort))
-            if [ ${#sub_dirs[@]} -gt 0 ]; then
+            # 1. 检查是否是全栈单一大工程 (如 21_final_station_hub 包含 embedded/)
+            if [ -d "${ch_path}/embedded" ]; then
+                local short_prefix=$(echo "$ch_dir" | cut -c 1-2)
+                echo -e "   [\033[33m${short_prefix}\033[0m] 🏆 embedded/ (桌面智能气象站与中控台嵌入式端)  \033[90m🌟 全栈一体化大工程 [embedded/ + server/ + app/]\033[0m"
+            # 2. 检查是否包含子工程目录 (如 01_bsp_decoupling, 02_fsm_state_machine)
+            elif sub_dirs=($(find "${ch_path}" -maxdepth 1 -type d -name "[0-9][0-9]_*" | sort)); [ ${#sub_dirs[@]} -gt 0 ]; then
                 local idx=1
-                for sdir in "${sub_dirs[@]}"; do
-                    local sname=$(basename "${sdir}")
+                for sd in "${sub_dirs[@]}"; do
                     local first_line=""
-                    if [ -f "${sdir}/app_main.c" ]; then
-                        first_line=$(grep -m 1 -E "🌟|🚀|📁" "${sdir}/app_main.c" || echo "")
+                    local entry_file="${sd}/app_main.c"
+                    if [ -f "${entry_file}" ]; then
+                        first_line=$(grep -E "🌟|🚀|📁" "${entry_file}" | head -n 1 | sed 's/^[ \t]*//')
                     fi
-                    echo -e "   [\033[33m${dir_name:0:2} ${idx}\033[0m] 📁 ${sname}/  \033[90m${first_line}\033[0m"
-                    ((idx++))
+                    local sd_name=$(basename "$sd")
+                    local short_prefix=$(echo "$ch_dir" | cut -c 1-2)
+                    echo -e "   [\033[33m${short_prefix} ${idx}\033[0m] 📁 ${sd_name}/  \033[90m${first_line}\033[0m"
+                    idx=$((idx + 1))
                 done
             else
-                # 2. 标准单文件列表
-                local exp_files=($(find "${ch_path}" -maxdepth 1 -name "*.c" | sort))
+                # 3. 标准单文件列表
+                local files=($(find "${ch_path}" -maxdepth 1 -name "*.c" | sort))
                 local idx=1
-                for file in "${exp_files[@]}"; do
-                    local basename=$(basename "${file}")
-                    local first_line=$(grep -m 1 -E "🌟|🚀|📁" "${file}" || echo "")
-                    echo -e "   [\033[33m${dir_name:0:2} ${idx}\033[0m] ${basename}  \033[90m${first_line}\033[0m"
-                    ((idx++))
+                for f in "${files[@]}"; do
+                    local first_line=""
+                    if [ -f "$f" ]; then
+                        first_line=$(grep -E "🌟|🚀|📁" "$f" | head -n 1 | sed 's/^[ \t]*//')
+                    fi
+                    local f_name=$(basename "$f")
+                    local short_prefix=$(echo "$ch_dir" | cut -c 1-2)
+                    echo -e "   [\033[33m${short_prefix} ${idx}\033[0m] ${f_name}  \033[90m${first_line}\033[0m"
+                    idx=$((idx + 1))
                 done
             fi
         fi
@@ -125,11 +134,31 @@ rm -rf "${PROJECT_ROOT}/main/bsp" "${PROJECT_ROOT}/main/services" "${PROJECT_ROO
 
 PADDED_EXP=$(printf "%02d" "$EXP_NUM" 2>/dev/null || echo "$EXP_NUM")
 
-# 判断目标实验是“子工程目录”还是“单个 .c 源码文件”
+# 判断目标实验类型
+EMBEDDED_PATH="${MATCH_DIR}/embedded"
 MATCH_SUB_DIR=$(find "${MATCH_DIR}" -maxdepth 1 -type d -name "${PADDED_EXP}_*" | head -n 1)
 
-if [ -n "${MATCH_SUB_DIR}" ] && [ -d "${MATCH_SUB_DIR}" ]; then
-    # ── 模式 A: 复制整个子工程目录到 main/ ──
+if [ -d "${EMBEDDED_PATH}" ]; then
+    # ── 模式 A1: 关卡 21 从 embedded/ 子目录拉取固件代码到 main/ ──
+    for item in "${EMBEDDED_PATH}"/*; do
+        local item_name=$(basename "$item")
+        if [ "$item_name" == "partitions.csv" ]; then
+            cp -f "$item" "${PROJECT_ROOT}/partitions.csv"
+        elif [ -d "$item" ]; then
+            cp -rf "$item" "${PROJECT_ROOT}/main/"
+        else
+            cp -f "$item" "${PROJECT_ROOT}/main/"
+        fi
+    done
+
+    REL_SRC="${EMBEDDED_PATH#$PROJECT_ROOT/}"
+    echo "================================================================="
+    echo -e "\033[32m🏆 成功切换第 21 关毕业设计全栈大工程！\033[0m"
+    echo -e "   嵌入式源目录: \033[33m${REL_SRC}\033[0m"
+    echo -e "   目标工作区:   \033[36mmain/ [已拉取完整的 BSP + Services + UI + App 模块]\033[0m"
+    echo "================================================================="
+elif [ -n "${MATCH_SUB_DIR}" ] && [ -d "${MATCH_SUB_DIR}" ]; then
+    # ── 模式 A2: 复制整个子工程目录到 main/ ──
     for item in "${MATCH_SUB_DIR}"/*; do
         local item_name=$(basename "$item")
         if [ "$item_name" == "partitions.csv" ]; then

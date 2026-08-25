@@ -81,14 +81,14 @@ function List-Experiments {
         Write-Host "  (目录: code/$($ch.Dir))" -ForegroundColor Gray
 
         if (Test-Path $chPath) {
-            # 1. 检查是否是全栈单一大工程 (如 21_final_station_hub 包含 firmware/)
-            $fwDir = Join-Path $chPath "firmware"
-            if (Test-Path $fwDir) {
+            # 1. 检查是否是全栈单一大工程 (如 21_final_station_hub 包含 embedded/)
+            $embDir = Join-Path $chPath "embedded"
+            if (Test-Path $embDir) {
                 $shortPrefix = $ch.Dir.Substring(0, 2)
                 Write-Host "   [" -NoNewline
-                Write-Host "$shortPrefix 1" -ForegroundColor Yellow -NoNewline
-                Write-Host "] 🏆 firmware/ (桌面智能气象站与中控台全栈总成)  " -NoNewline
-                Write-Host "🌟 全栈软硬件一体化大工程" -ForegroundColor DarkGray
+                Write-Host "$shortPrefix" -ForegroundColor Yellow -NoNewline
+                Write-Host "] 🏆 embedded/ (桌面智能气象站与中控台嵌入式端)  " -NoNewline
+                Write-Host "🌟 全栈一体化大工程 [embedded/ + server/ + app/]" -ForegroundColor DarkGray
             }
             # 2. 检查是否包含子工程目录 (如 01_bsp_decoupling, 02_fsm_state_machine)
             elseif ($subExpDirs = Get-ChildItem -Path $chPath -Directory | Where-Object { $_.Name -match '^\d{2}_' } | Sort-Object Name) {
@@ -188,12 +188,15 @@ foreach ($d in $subDirsToClean) {
 }
 
 # 4. 判断目标实验类型
-$firmwarePath = Join-Path $targetDir "firmware"
+$embeddedPath = Join-Path $targetDir "embedded"
+if (-not (Test-Path $embeddedPath)) {
+    $embeddedPath = Join-Path $targetDir "firmware"
+}
 $matchSubDir = Get-ChildItem -Path $targetDir -Directory | Where-Object { $_.Name -like "${paddedExp}_*" }
 
-if (Test-Path $firmwarePath) {
-    # ── 模式 A1: 关卡 21 完整大工程 firmware/ 同步 ──
-    Get-ChildItem -Path $firmwarePath | ForEach-Object {
+if (Test-Path $embeddedPath) {
+    # ── 模式 A1: 关卡 21 从 embedded/ 子目录拉取固件代码到 main/ ──
+    Get-ChildItem -Path $embeddedPath | ForEach-Object {
         if ($_.Name -eq "partitions.csv") {
             Copy-Item -Path $_.FullName -Destination (Join-Path $ProjectRoot "partitions.csv") -Force
         } elseif ($_.PSIsContainer) {
@@ -202,13 +205,13 @@ if (Test-Path $firmwarePath) {
             Copy-Item -Path $_.FullName -Destination (Join-Path $ProjectRoot "main\$($_.Name)") -Force
         }
     }
-    $relSrc = $firmwarePath.Replace($ProjectRoot, "").TrimStart("\/")
+    $relSrc = $embeddedPath.Replace($ProjectRoot, "").TrimStart("\/")
     Write-Host "=================================================================" -ForegroundColor Green
     Write-Host "🏆 成功切换第 21 关毕业设计全栈大工程！" -ForegroundColor Green
-    Write-Host "   源工程: " -NoNewline
+    Write-Host "   嵌入式源目录: " -NoNewline
     Write-Host "$relSrc" -ForegroundColor Yellow
-    Write-Host "   目标位: " -NoNewline
-    Write-Host "main/ [包含完整的 BSP + Services + UI + App 模块]" -ForegroundColor Cyan
+    Write-Host "   目标工作区:   " -NoNewline
+    Write-Host "main/ [已拉取完整的 BSP + Services + UI + App 模块]" -ForegroundColor Cyan
     Write-Host "=================================================================" -ForegroundColor Green
 } elseif ($matchSubDir -and $matchSubDir.Count -gt 0) {
     # ── 模式 A2: 复制子工程目录到 main/ ──
