@@ -1,0 +1,12 @@
+#pragma once
+#include "lvgl.h"
+
+// 拟物气象与系统符号宏
+#define ICON_SUNNY       LV_SYMBOL_IMAGE " SUNNY"
+#define ICON_RAINY       LV_SYMBOL_DOWNLOAD " RAINY"
+#define ICON_WIFI_OK     LV_SYMBOL_WIFI
+#define ICON_BLE_OK      LV_SYMBOL_BLUETOOTH
+#define ICON_SD_OK       LV_SYMBOL_SD_CARD
+#define ICON_SETTINGS    LV_SYMBOL_SETTINGS
+#define ICON_POWER       LV_SYMBOL_POWER
+#define ICON_REFRESH     LV_SYMBOL_REFRESH

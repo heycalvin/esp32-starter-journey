@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#0B0F19"
+    android:padding="20dp">
+
+    <TextView
+        android:id="@+id/tvTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="ESP32 智能中控 · 手机端"
+        android:textColor="#38BDF8"
+        android:textSize="22sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="未连接 BLE 蓝牙设备"
+        android:textColor="#94A3B8"
+        android:textSize="13sp" />
+
+    <Button
+        android:id="@+id/btnScan"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:backgroundTint="#0284C7"
+        android:text="🔍 扫描并连接 ESP32-Smart-Hub"
+        android:textColor="#FFFFFF" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:orientation="horizontal">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="#1E293B"
+            android:padding="16dp"
+            android:orientation="vertical">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="气温" android:textColor="#94A3B8" />
+            <TextView android:id="@+id/tvTemp" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="-- °C" android:textColor="#F87171" android:textSize="20sp" android:textStyle="bold" />
+        </LinearLayout>
+
+        <View android:layout_width="12dp" android:layout_height="1dp" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="#1E293B"
+            android:padding="16dp"
+            android:orientation="vertical">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="湿度" android:textColor="#94A3B8" />
+            <TextView android:id="@+id/tvHumi" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="-- %" android:textColor="#38BDF8" android:textSize="20sp" android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:background="#1E293B"
+        android:padding="16dp"
+        android:orientation="vertical">
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="雷达测距" android:textColor="#94A3B8" />
+        <TextView android:id="@+id/tvDist" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="-- cm" android:textColor="#34D399" android:textSize="20sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/btnToggleLed"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:backgroundTint="#10B981"
+        android:text="💡 手机蓝牙远程开关板载 LED2"
+        android:textColor="#FFFFFF" />
+
+</LinearLayout>

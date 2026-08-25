@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 智能中控 · 免安装 Web 蓝牙手机中控台</title>
+  <style>
+    :root {
+      --bg: #0B0F19;
+      --card-bg: rgba(30, 41, 59, 0.7);
+      --primary: #0284C7;
+      --text: #F8FAFC;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 20px;
+      margin: 0;
+    }
+    .container { max-width: 480px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+    .card { background: var(--card-bg); border-radius: 16px; padding: 20px; border: 1px solid rgba(255,255,255,0.1); }
+    .btn { background: var(--primary); color: white; border: none; padding: 12px 20px; border-radius: 10px; font-weight: bold; width: 100%; cursor: pointer; }
+    .btn-green { background: #10B981; }
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .stat-val { font-size: 24px; font-weight: bold; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h2 style="color:#38BDF8; margin:0 0 8px 0;">📱 Web 蓝牙免安装中控台</h2>
+      <p style="color:#94A3B8; font-size:13px; margin:0 0 16px 0;">利用 Chrome Web-Bluetooth API 直连 ESP32-Smart-Hub</p>
+      <button class="btn" id="btnConnect" onclick="connectBle()">🔍 点击扫描并配对 ESP32</button>
+      <p id="status" style="font-size:12px; color:#F59E0B; margin-top:10px;">状态: 未连接</p>
+    </div>
+
+    <div class="card stat-grid">
+      <div>
+        <div style="color:#94A3B8; font-size:12px;">气温 (NTC)</div>
+        <div class="stat-val" id="tempVal" style="color:#F87171;">-- °C</div>
+      </div>
+      <div>
+        <div style="color:#94A3B8; font-size:12px;">湿度 (DHT11)</div>
+        <div class="stat-val" id="humiVal" style="color:#38BDF8;">-- %</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="color:#94A3B8; font-size:12px;">超声波测距</div>
+      <div class="stat-val" id="distVal" style="color:#34D399;">-- cm</div>
+    </div>
+
+    <div class="card">
+      <button class="btn btn-green" onclick="toggleLed()">💡 蓝牙开关板载 LED2</button>
+    </div>
+  </div>
+
+  <script>
+    let bleDevice = null;
+    let ctrlChar = null;
+
+    async function connectBle() {
+      try {
+        document.getElementById('status').innerText = '正在打开蓝牙扫描选择框...';
+        bleDevice = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: ['000000ff-0000-1000-8000-00805f9b34fb']
+        });
+        const server = await bleDevice.gatt.connect();
+        document.getElementById('status').innerText = '✅ 已连接到 ' + bleDevice.name;
+
+        const service = await server.getPrimaryService('000000ff-0000-1000-8000-00805f9b34fb');
+        ctrlChar = await service.getCharacteristic('0000ff02-0000-1000-8000-00805f9b34fb');
+
+        const sensorChar = await service.getCharacteristic('0000ff01-0000-1000-8000-00805f9b34fb');
+        await sensorChar.startNotifications();
+        sensorChar.addEventListener('characteristicvaluechanged', (e) => {
+          const text = new TextDecoder().decode(e.target.value);
+          // T:26.5,H:60.0,D:20.0
+          text.split(',').forEach(p => {
+            if (p.startsWith('T:')) document.getElementById('tempVal').innerText = p.substring(2) + ' °C';
+            if (p.startsWith('H:')) document.getElementById('humiVal').innerText = p.substring(2) + ' %';
+            if (p.startsWith('D:')) document.getElementById('distVal').innerText = p.substring(2) + ' cm';
+          });
+        });
+      } catch (err) {
+        document.getElementById('status').innerText = '⚠️ 连接取消或失败: ' + err;
+      }
+    }
+
+    async function toggleLed() {
+      if (ctrlChar) {
+        const enc = new TextEncoder();
+        await ctrlChar.writeValue(enc.encode('TOGGLE_LED'));
+      } else {
+        alert('请先连接 ESP32 蓝牙设备！');
+      }
+    }
+  </script>
+</body>
+</html>

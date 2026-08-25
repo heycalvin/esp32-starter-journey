@@ -81,9 +81,17 @@ function List-Experiments {
         Write-Host "  (目录: code/$($ch.Dir))" -ForegroundColor Gray
 
         if (Test-Path $chPath) {
-            # 1. 先检查是否包含子工程目录 (如 01_bsp_decoupling, 02_fsm_state_machine)
-            $subExpDirs = Get-ChildItem -Path $chPath -Directory | Where-Object { $_.Name -match '^\d{2}_' } | Sort-Object Name
-            if ($subExpDirs -and $subExpDirs.Count -gt 0) {
+            # 1. 检查是否是全栈单一大工程 (如 21_final_station_hub 包含 firmware/)
+            $fwDir = Join-Path $chPath "firmware"
+            if (Test-Path $fwDir) {
+                $shortPrefix = $ch.Dir.Substring(0, 2)
+                Write-Host "   [" -NoNewline
+                Write-Host "$shortPrefix 1" -ForegroundColor Yellow -NoNewline
+                Write-Host "] 🏆 firmware/ (桌面智能气象站与中控台全栈总成)  " -NoNewline
+                Write-Host "🌟 全栈软硬件一体化大工程" -ForegroundColor DarkGray
+            }
+            # 2. 检查是否包含子工程目录 (如 01_bsp_decoupling, 02_fsm_state_machine)
+            elseif ($subExpDirs = Get-ChildItem -Path $chPath -Directory | Where-Object { $_.Name -match '^\d{2}_' } | Sort-Object Name) {
                 $idx = 1
                 foreach ($sd in $subExpDirs) {
                     $firstLine = ""
@@ -101,7 +109,7 @@ function List-Experiments {
                     $idx++
                 }
             } else {
-                # 2. 标准单文件列表
+                # 3. 标准单文件列表
                 $files = Get-ChildItem -Path $chPath -Filter "*.c" | Sort-Object Name
                 $idx = 1
                 foreach ($f in $files) {
@@ -179,12 +187,31 @@ foreach ($d in $subDirsToClean) {
     }
 }
 
-# 4. 判断目标实验是“子工程目录”还是“单个 .c 源码文件”
+# 4. 判断目标实验类型
+$firmwarePath = Join-Path $targetDir "firmware"
 $matchSubDir = Get-ChildItem -Path $targetDir -Directory | Where-Object { $_.Name -like "${paddedExp}_*" }
-$isDirProject = ($matchSubDir -and $matchSubDir.Count -gt 0)
 
-if ($isDirProject) {
-    # ── 模式 A: 复制整个子工程目录到 main/ ──
+if (Test-Path $firmwarePath) {
+    # ── 模式 A1: 关卡 21 完整大工程 firmware/ 同步 ──
+    Get-ChildItem -Path $firmwarePath | ForEach-Object {
+        if ($_.Name -eq "partitions.csv") {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $ProjectRoot "partitions.csv") -Force
+        } elseif ($_.PSIsContainer) {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $ProjectRoot "main\$($_.Name)") -Recurse -Force
+        } else {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $ProjectRoot "main\$($_.Name)") -Force
+        }
+    }
+    $relSrc = $firmwarePath.Replace($ProjectRoot, "").TrimStart("\/")
+    Write-Host "=================================================================" -ForegroundColor Green
+    Write-Host "🏆 成功切换第 21 关毕业设计全栈大工程！" -ForegroundColor Green
+    Write-Host "   源工程: " -NoNewline
+    Write-Host "$relSrc" -ForegroundColor Yellow
+    Write-Host "   目标位: " -NoNewline
+    Write-Host "main/ [包含完整的 BSP + Services + UI + App 模块]" -ForegroundColor Cyan
+    Write-Host "=================================================================" -ForegroundColor Green
+} elseif ($matchSubDir -and $matchSubDir.Count -gt 0) {
+    # ── 模式 A2: 复制子工程目录到 main/ ──
     $expDir = $matchSubDir[0].FullName
     Get-ChildItem -Path $expDir | ForEach-Object {
         if ($_.Name -eq "partitions.csv") {

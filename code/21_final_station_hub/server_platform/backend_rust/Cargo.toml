@@ -1,0 +1,17 @@
+[package]
+name = "esp32_hub_server"
+version = "0.1.0"
+edition = "2021"
+description = "ESP32 智能中控后台服务 (Rust + Axum)"
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
+image = "0.24"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+reqwest = { version = "0.11", features = ["json"] }
+sha2 = "0.10"
