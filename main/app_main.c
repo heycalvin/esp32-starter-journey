@@ -15,6 +15,7 @@
 #include "services/net_manager.h"
 #include "services/ble_manager.h"
 #include "services/file_reader.h"
+#include "services/sys_font_manager.h"
 #include "services/web_server.h"
 #include "ui/ui_hub.h"
 #include "app/app_business.h"
@@ -46,6 +47,7 @@ void app_main(void)
     sys_guard_wdt_init(6000); // 6秒看门狗守护
     sys_ota_init();
     file_reader_init();
+    sys_font_manager_init();
     net_manager_init("ESP32_WIFI", "12345678");
     ble_manager_init("ESP32-Smart-Hub");
     web_server_init();

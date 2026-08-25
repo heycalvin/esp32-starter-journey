@@ -141,7 +141,7 @@ MATCH_SUB_DIR=$(find "${MATCH_DIR}" -maxdepth 1 -type d -name "${PADDED_EXP}_*" 
 if [ -d "${EMBEDDED_PATH}" ]; then
     # ── 模式 A1: 关卡 21 从 embedded/ 子目录拉取固件代码到 main/ ──
     for item in "${EMBEDDED_PATH}"/*; do
-        local item_name=$(basename "$item")
+        item_name=$(basename "$item")
         if [ "$item_name" == "partitions.csv" ]; then
             cp -f "$item" "${PROJECT_ROOT}/partitions.csv"
         elif [ -d "$item" ]; then
@@ -160,7 +160,7 @@ if [ -d "${EMBEDDED_PATH}" ]; then
 elif [ -n "${MATCH_SUB_DIR}" ] && [ -d "${MATCH_SUB_DIR}" ]; then
     # ── 模式 A2: 复制整个子工程目录到 main/ ──
     for item in "${MATCH_SUB_DIR}"/*; do
-        local item_name=$(basename "$item")
+        item_name=$(basename "$item")
         if [ "$item_name" == "partitions.csv" ]; then
             cp -f "$item" "${PROJECT_ROOT}/partitions.csv"
         elif [ -d "$item" ]; then

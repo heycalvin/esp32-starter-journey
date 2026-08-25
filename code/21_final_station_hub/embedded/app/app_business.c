@@ -22,19 +22,30 @@ static void sensor_telemetry_task(void *pvParameters)
     sys_guard_wdt_subscribe_current_task();
 
     bsp_sensor_data_t sensor_data;
-    char time_str[32] = "12:00:00";
+    char time_str[32] = "16:00:00";
+    char date_str[64] = "2026年08月25日 星期二";
+    char uptime_str[32] = "00:00:00 (0s)";
+    char ip_str[32] = "192.168.4.1";
     int cycle_cnt = 0;
 
     while (1) {
         cycle_cnt++;
 
-        // 1. 采集全套传感器
+        // 1. 采集全套传感器与时钟/网络状态
         bsp_sensor_read_all(&sensor_data);
         net_manager_get_time_str(time_str, sizeof(time_str));
+        net_manager_get_date_str(date_str, sizeof(date_str));
+        net_manager_get_uptime_str(uptime_str, sizeof(uptime_str));
+        net_manager_get_ip_str(ip_str, sizeof(ip_str));
 
-        // 2. 更新 LVGL 界面
+        // 2. 更新 LVGL 界面 (首页气象时钟看板、IoT仪表盘、系统运行时间)
+        ui_hub_update_time_and_date(time_str, date_str);
         ui_hub_update_sensor_data(&sensor_data);
-        ui_hub_update_time(time_str);
+        ui_hub_update_system_status(uptime_str, ip_str, sensor_data.free_heap_bytes, sensor_data.free_psram_bytes);
+
+        if (!net_manager_is_provisioning()) {
+            ui_hub_update_weather_full("深圳市 · 晴朗", "晴朗舒适 · 适宜阅读", sensor_data.ntc_temperature, sensor_data.dht_humidity);
+        }
 
         // 3. 广播事件到总线
         sys_event_bus_post(HUB_EVT_SENSOR_UPDATED, &sensor_data, sizeof(sensor_data));
@@ -53,14 +64,22 @@ static void sensor_telemetry_task(void *pvParameters)
             net_manager_publish_telemetry(json_buf);
         }
 
-        // 6. 按键检测响应
+        // 6. 按键长短按智能检测响应 (短按开关灯，长按3秒重置配网)
         if (bsp_button_is_pressed()) {
-            vTaskDelay(pdMS_TO_TICKS(20));
+            vTaskDelay(pdMS_TO_TICKS(30));
             if (bsp_button_is_pressed()) {
-                bsp_led_toggle();
-                ESP_LOGI(TAG, "🔘 [按键触发] 用户按下板载 SW3，翻转 LED2 状态 ➔ %s", bsp_led_get_state() ? "ON" : "OFF");
-                while (bsp_button_is_pressed()) {
+                int press_ms = 0;
+                while (bsp_button_is_pressed() && press_ms < 3200) {
                     vTaskDelay(pdMS_TO_TICKS(50));
+                    press_ms += 50;
+                }
+
+                if (press_ms >= 3000) {
+                    ESP_LOGW(TAG, "🔘 [长按 3 秒触发] 正在重置 Wi-Fi 凭据并重启回 AP 配网模式...");
+                    net_manager_reset_credentials();
+                } else {
+                    bsp_led_toggle();
+                    ESP_LOGI(TAG, "🔘 [短按触发] 用户按下板载 SW3，翻转 LED2 状态 ➔ %s", bsp_led_get_state() ? "ON" : "OFF");
                 }
             }
         }

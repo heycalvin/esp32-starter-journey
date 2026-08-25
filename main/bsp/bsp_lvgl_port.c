@@ -1,4 +1,5 @@
 #include "bsp_lvgl_port.h"
+#include <assert.h>
 #include "esp_lvgl_port.h"
 #include "bsp_display.h"
 #include "esp_log.h"
@@ -12,7 +13,7 @@ esp_err_t bsp_lvgl_port_init(esp_lcd_panel_io_handle_t io, esp_lcd_panel_handle_
     const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
-    // 2. 注册显示设备 (双缓冲 + DMA + 显存放入 PSRAM)
+    // 2. 注册显示设备 (双缓冲 + DMA)
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io,
         .panel_handle = panel,
@@ -22,9 +23,10 @@ esp_err_t bsp_lvgl_port_init(esp_lcd_panel_io_handle_t io, esp_lcd_panel_handle_
         .vres = BSP_LCD_V_RES,
         .monochrome = false,
         .rotation = { .swap_xy = false, .mirror_x = false, .mirror_y = false },
-        .flags = { .buff_dma = true, .buff_spiram = true, .swap_bytes = true }
+        .flags = { .buff_dma = true, .swap_bytes = true }
     };
     s_lvgl_disp = lvgl_port_add_disp(&disp_cfg);
+    assert(s_lvgl_disp != NULL);
 
     // 3. 注册触摸设备
     if (touch && s_lvgl_disp) {
