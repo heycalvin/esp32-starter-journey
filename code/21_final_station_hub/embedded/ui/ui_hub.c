@@ -150,20 +150,32 @@ void ui_hub_init(void)
     lv_obj_align(s_label_temp, LV_ALIGN_TOP_LEFT, 5, 5);
 
     s_bar_temp = lv_bar_create(tab2);
-    lv_obj_set_size(s_bar_temp, 210, 10);
-    lv_obj_align(s_bar_temp, LV_ALIGN_TOP_LEFT, 5, 25);
+    lv_obj_set_size(s_bar_temp, 210, 8);
+    lv_obj_align(s_bar_temp, LV_ALIGN_TOP_LEFT, 5, 23);
     lv_bar_set_range(s_bar_temp, 0, 50);
     lv_bar_set_value(s_bar_temp, 25, LV_ANIM_OFF);
     lv_obj_set_style_bg_color(s_bar_temp, lv_color_hex(0xEF4444), LV_PART_INDICATOR);
 
+    s_label_humi = lv_label_create(tab2);
+    lv_label_set_text(s_label_humi, "DHT11 Humi: 60.0 %");
+    lv_obj_set_style_text_color(s_label_humi, lv_color_hex(0x38BDF8), 0);
+    lv_obj_align(s_label_humi, LV_ALIGN_TOP_LEFT, 5, 37);
+
+    s_bar_humi = lv_bar_create(tab2);
+    lv_obj_set_size(s_bar_humi, 210, 8);
+    lv_obj_align(s_bar_humi, LV_ALIGN_TOP_LEFT, 5, 55);
+    lv_bar_set_range(s_bar_humi, 0, 100);
+    lv_bar_set_value(s_bar_humi, 60, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_bar_humi, lv_color_hex(0x06B6D4), LV_PART_INDICATOR);
+
     s_label_dist = lv_label_create(tab2);
     lv_label_set_text(s_label_dist, "Distance: 20.0 cm");
     lv_obj_set_style_text_color(s_label_dist, lv_color_hex(0x34D399), 0);
-    lv_obj_align(s_label_dist, LV_ALIGN_TOP_LEFT, 5, 45);
+    lv_obj_align(s_label_dist, LV_ALIGN_TOP_LEFT, 5, 69);
 
     s_bar_dist = lv_bar_create(tab2);
-    lv_obj_set_size(s_bar_dist, 210, 10);
-    lv_obj_align(s_bar_dist, LV_ALIGN_TOP_LEFT, 5, 65);
+    lv_obj_set_size(s_bar_dist, 210, 8);
+    lv_obj_align(s_bar_dist, LV_ALIGN_TOP_LEFT, 5, 87);
     lv_bar_set_range(s_bar_dist, 0, 100);
     lv_bar_set_value(s_bar_dist, 20, LV_ANIM_OFF);
     lv_obj_set_style_bg_color(s_bar_dist, lv_color_hex(0x10B981), LV_PART_INDICATOR);
@@ -264,6 +276,10 @@ void ui_hub_update_sensor_data(const bsp_sensor_data_t *data)
     snprintf(buf, sizeof(buf), "NTC Temp: %.1f °C", data->ntc_temperature);
     lv_label_set_text(s_label_temp, buf);
     lv_bar_set_value(s_bar_temp, (int)data->ntc_temperature, LV_ANIM_ON);
+
+    snprintf(buf, sizeof(buf), "DHT11 Humi: %.1f %%", data->dht_humidity);
+    lv_label_set_text(s_label_humi, buf);
+    lv_bar_set_value(s_bar_humi, (int)data->dht_humidity, LV_ANIM_ON);
 
     snprintf(buf, sizeof(buf), "Distance: %.1f cm", data->ultrasonic_dist_cm);
     lv_label_set_text(s_label_dist, buf);
