@@ -304,7 +304,6 @@ void ui_game_2048_init(lv_obj_t *parent_tab)
     lv_obj_set_style_radius(s_game_board, 8, 0);
     lv_obj_set_style_pad_all(s_game_board, CELL_GAP, 0);
     lv_obj_clear_flag(s_game_board, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(s_game_board, LV_OBJ_FLAG_GESTURE_BUBBLE);  // 手势冒泡到 tab
     lv_obj_add_event_cb(s_game_board, on_gesture, LV_EVENT_GESTURE, NULL);
 
     /* ── 创建 4×4 格子 ───────────────────────────────────────────────────── */

@@ -6,7 +6,6 @@
 #include "esp_log.h"
 #include "bsp_sensor.h"
 #include "bsp_button.h"
-#include "bsp_led.h"
 #include "bsp_sdcard.h"
 #include "sys_event_bus.h"
 #include "sys_guard_wdt.h"
@@ -16,6 +15,58 @@
 #include "ui_pomodoro.h"
 
 static const char *TAG = "APP_BIZ";
+
+#define BUTTON_SAMPLE_MS       20
+#define BUTTON_DEBOUNCE_SAMPLES 2
+#define BUTTON_LONG_PRESS_MS   3000
+
+/* SW3 导航任务：按键不再占用传感器遥测任务的执行周期。 */
+static void button_navigation_task(void *pvParameters)
+{
+    bool stable_pressed = false;
+    uint8_t debounce_samples = 0;
+    uint32_t held_ms = 0;
+    bool long_press_sent = false;
+
+    ESP_LOGI(TAG, "🔘 [按键] SW3 导航任务启动：短按导航，长按 %d 秒重置配网", BUTTON_LONG_PRESS_MS / 1000);
+
+    while (1) {
+        bool raw_pressed = bsp_button_is_pressed();
+
+        if (raw_pressed != stable_pressed) {
+            debounce_samples++;
+            if (debounce_samples >= BUTTON_DEBOUNCE_SAMPLES) {
+                bool was_pressed = stable_pressed;
+                stable_pressed = raw_pressed;
+                debounce_samples = 0;
+
+                if (stable_pressed) {
+                    held_ms = 0;
+                    long_press_sent = false;
+                } else if (was_pressed) {
+                    if (!long_press_sent && held_ms >= 40) {
+                        ui_hub_handle_sw3_short_press();
+                    }
+                    held_ms = 0;
+                    long_press_sent = false;
+                }
+            }
+        } else {
+            debounce_samples = 0;
+        }
+
+        if (stable_pressed) {
+            if (held_ms < BUTTON_LONG_PRESS_MS) held_ms += BUTTON_SAMPLE_MS;
+            if (held_ms >= BUTTON_LONG_PRESS_MS && !long_press_sent) {
+                long_press_sent = true;
+                ESP_LOGW(TAG, "🔘 [长按 3 秒触发] 正在重置 Wi-Fi 凭据并重启回 AP 配网模式...");
+                net_manager_reset_credentials();
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(BUTTON_SAMPLE_MS));
+    }
+}
 
 /* 后台传感器采样与遥测中枢任务 (运行在 CPU Core 0) */
 static void sensor_telemetry_task(void *pvParameters)
@@ -55,6 +106,7 @@ static void sensor_telemetry_task(void *pvParameters)
             int h = 0, m = 0, s = 0;
             sscanf(time_str, "%d:%d:%d", &h, &m, &s);
             ui_pomodoro_tick(h, m, s);
+            ui_pomodoro_update_date(date_str);
         }
 
         char loc_str[64] = {0};
@@ -83,27 +135,7 @@ static void sensor_telemetry_task(void *pvParameters)
             net_manager_publish_telemetry(json_buf);
         }
 
-        // 6. 按键长短按智能检测响应 (短按开关灯，长按3秒重置配网)
-        if (bsp_button_is_pressed()) {
-            vTaskDelay(pdMS_TO_TICKS(30));
-            if (bsp_button_is_pressed()) {
-                int press_ms = 0;
-                while (bsp_button_is_pressed() && press_ms < 3200) {
-                    vTaskDelay(pdMS_TO_TICKS(50));
-                    press_ms += 50;
-                }
-
-                if (press_ms >= 3000) {
-                    ESP_LOGW(TAG, "🔘 [长按 3 秒触发] 正在重置 Wi-Fi 凭据并重启回 AP 配网模式...");
-                    net_manager_reset_credentials();
-                } else {
-                    bsp_led_toggle();
-                    ESP_LOGI(TAG, "🔘 [短按触发] 用户按下板载 SW3，翻转 LED2 状态 ➔ %s", bsp_led_get_state() ? "ON" : "OFF");
-                }
-            }
-        }
-
-        // 7. 喂看门狗
+        // 6. 喂看门狗
         sys_guard_wdt_feed();
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -111,6 +143,9 @@ static void sensor_telemetry_task(void *pvParameters)
 
 esp_err_t app_business_start(void)
 {
+    // 独立按键任务保证 SW3 导航不被传感器采样阻塞
+    xTaskCreatePinnedToCore(button_navigation_task, "button_task", 3072, NULL, 5, NULL, 1);
+
     // 创建 Core 0 上的传感器融合与网络遥测调度任务
     xTaskCreatePinnedToCore(sensor_telemetry_task, "sensor_task", 4096, NULL, 4, NULL, 0);
     ESP_LOGI(TAG, "🚀 [业务层] 智能中控双核多任务调度系统正式启动！");

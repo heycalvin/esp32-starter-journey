@@ -1,6 +1,7 @@
 #include "ui_hub.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include "lvgl.h"
 #include "bsp_lvgl_port.h"
 #include "bsp_display.h"
@@ -19,6 +20,18 @@
 static const char *TAG = "UI_HUB";
 
 static lv_obj_t *s_tileview = NULL;
+static lv_obj_t *s_tile_home = NULL;
+
+/* 独立应用层：应用运行时覆盖 TileView，应用内部手势不会切换快捷页。 */
+static lv_obj_t *s_app_layer = NULL;
+static lv_obj_t *s_launcher = NULL;
+static lv_obj_t *s_app_pages[3] = {NULL};
+
+typedef enum {
+    HUB_APP_2048 = 0,
+    HUB_APP_PHOTO,
+    HUB_APP_NOVEL,
+} hub_app_id_t;
 
 // ── Tile (1, 1) 主桌面看板 (Home Cyber Bento) 控件 ──
 static lv_obj_t *s_label_wifi_icon = NULL;
@@ -36,7 +49,6 @@ static lv_obj_t *s_bar_bento_dist = NULL;
 
 static lv_obj_t *s_btn_bento_led = NULL;
 static lv_obj_t *s_label_bento_led = NULL;
-static lv_obj_t *s_label_bento_ip = NULL;
 
 // ── Tile (1, 0) 下拉控制中心 控件 ──
 static lv_obj_t *s_slider_bright = NULL;
@@ -100,12 +112,69 @@ static void on_cc_brightness_changed(lv_event_t *e)
     }
 }
 
-/* ── 快捷返回主页 ── */
-static void on_return_home_clicked(lv_event_t *e)
+/* ── 导航辅助函数（调用者必须已经持有 LVGL 锁，或处于 LVGL 回调内） ── */
+static void ui_hub_go_home(void)
 {
     if (s_tileview) {
+        lv_obj_clear_flag(s_tileview, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_app_layer, LV_OBJ_FLAG_HIDDEN);
         lv_tileview_set_tile_by_index(s_tileview, 1, 1, LV_ANIM_ON);
     }
+}
+
+static void ui_hub_open_launcher(void)
+{
+    if (!s_app_layer || !s_launcher) return;
+
+    lv_obj_add_flag(s_tileview, LV_OBJ_FLAG_HIDDEN);
+    for (size_t i = 0; i < sizeof(s_app_pages) / sizeof(s_app_pages[0]); i++) {
+        lv_obj_add_flag(s_app_pages[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_clear_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_app_layer, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_to_index(s_app_layer, -1);
+}
+
+static void ui_hub_open_app(hub_app_id_t app_id)
+{
+    if (!s_app_layer || !s_launcher || app_id >= (sizeof(s_app_pages) / sizeof(s_app_pages[0]))) return;
+
+    lv_obj_add_flag(s_launcher, LV_OBJ_FLAG_HIDDEN);
+    for (size_t i = 0; i < sizeof(s_app_pages) / sizeof(s_app_pages[0]); i++) {
+        if (s_app_pages[i]) lv_obj_add_flag(s_app_pages[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_clear_flag(s_app_pages[app_id], LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_tileview, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_app_layer, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_to_index(s_app_layer, -1);
+    ESP_LOGI(TAG, "📂 [应用] 打开程序 ID=%d", (int)app_id);
+}
+
+static void on_return_home_clicked(lv_event_t *e)
+{
+    ui_hub_go_home();
+}
+
+static void on_launcher_app_clicked(lv_event_t *e)
+{
+    hub_app_id_t app_id = (hub_app_id_t)(uintptr_t)lv_event_get_user_data(e);
+    ui_hub_open_app(app_id);
+}
+
+void ui_hub_handle_sw3_short_press(void)
+{
+    if (!s_tileview || !s_app_layer) return;
+
+    bsp_lvgl_port_lock(0);
+    if (!lv_obj_has_flag(s_app_layer, LV_OBJ_FLAG_HIDDEN)) {
+        ui_hub_go_home();
+    } else if (lv_tileview_get_tile_active(s_tileview) != s_tile_home) {
+        ui_hub_go_home();
+    } else {
+        ui_hub_open_launcher();
+    }
+    bsp_lvgl_port_unlock();
+    ESP_LOGI(TAG, "🔘 [SW3短按] 首页打开程序列表，其他页面返回首页");
 }
 
 /* ── 重置 Wi-Fi 事件 ── */
@@ -140,39 +209,32 @@ void ui_hub_init(void)
     lv_obj_set_style_bg_color(s_tileview, lv_color_hex(0x0A0F1D), 0);
     lv_obj_set_scrollbar_mode(s_tileview, LV_SCROLLBAR_MODE_OFF);
 
-    /* ── 2D 空间矩阵布局 ─────────────────────────────────────────
-     *                  (1, 0) 下拉: 🎛️ 控制中心
-     * (0, 1) 右滑: ⏱️ 番茄钟  ◄── (1, 1) 🏠 主桌面看板 ──► (2, 1) 相册 ──► (3, 1) 小说 ──► (4, 1) 游戏 ──► (5, 1) 系统
-     *                  (1, 2) 上滑: 📈 传感器趋势
+    /* ── 2D 空间矩阵布局：只保留四个高频快捷页 ───────────────────────────
+     *                  (1, 0) 上滑：🎛️ 控制中心
+     * (0, 1) 左滑：⏱️ 番茄钟  ◄── (1, 1) 🏠 主桌面看板 ──► (2, 1) 系统状态
+     *                  (1, 2) 下滑：📈 传感器趋势
+     * 相册、小说、2048 等沉浸式应用统一从程序列表进入。
      * ──────────────────────────────────────────────────────────── */
 
-    // (1, 1) 中心：主看板 (四向均可滑动)
+    // (1, 1) 中心：主看板
     lv_obj_t *tile_home = lv_tileview_add_tile(s_tileview, 1, 1, LV_DIR_ALL);
+    s_tile_home = tile_home;
 
-    // (1, 0) 顶部：下拉控制中心 (支持向下滑/向上滑)
+    // (1, 0) 顶部：上滑进入控制中心
     lv_obj_t *tile_cc = lv_tileview_add_tile(s_tileview, 1, 0, (lv_dir_t)(LV_DIR_TOP | LV_DIR_BOTTOM));
 
-    // (1, 2) 底部：上滑传感器折线图 (支持向上滑/向下滑)
+    // (1, 2) 底部：下滑进入传感器折线图
     lv_obj_t *tile_analytics = lv_tileview_add_tile(s_tileview, 1, 2, (lv_dir_t)(LV_DIR_TOP | LV_DIR_BOTTOM));
 
-    // (0, 1) 左侧：专注番茄钟 (支持左右滑动)
+    // (0, 1) 左侧：左滑进入专注番茄钟
     lv_obj_t *tile_pomodoro = lv_tileview_add_tile(s_tileview, 0, 1, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
 
-    // (2, 1) 右侧1：相册
-    lv_obj_t *tile_photo = lv_tileview_add_tile(s_tileview, 2, 1, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
-
-    // (3, 1) 右侧2：小说
-    lv_obj_t *tile_novel = lv_tileview_add_tile(s_tileview, 3, 1, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
-
-    // (4, 1) 右侧3：2048 游戏
-    lv_obj_t *tile_game = lv_tileview_add_tile(s_tileview, 4, 1, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
-
-    // (5, 1) 右侧4：系统运维
-    lv_obj_t *tile_sys = lv_tileview_add_tile(s_tileview, 5, 1, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
+    // (2, 1) 右侧：系统运维状态
+    lv_obj_t *tile_sys = lv_tileview_add_tile(s_tileview, 2, 1, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
 
     // 统一样式处理
-    lv_obj_t *all_tiles[] = {tile_home, tile_cc, tile_analytics, tile_pomodoro, tile_photo, tile_novel, tile_game, tile_sys};
-    for (int i = 0; i < 8; i++) {
+    lv_obj_t *all_tiles[] = {tile_home, tile_cc, tile_analytics, tile_pomodoro, tile_sys};
+    for (int i = 0; i < 5; i++) {
         lv_obj_set_style_pad_all(all_tiles[i], 4, 0);
         lv_obj_set_style_bg_color(all_tiles[i], lv_color_hex(0x0A0F1D), 0);
         lv_obj_clear_flag(all_tiles[i], LV_OBJ_FLAG_SCROLLABLE);
@@ -254,13 +316,13 @@ void ui_hub_init(void)
 
     // 实时天气描述胶囊
     s_bar_bento_dist = lv_label_create(clock_hero_card);
-    lv_obj_set_width((lv_obj_t *)s_bar_bento_dist, 218);
-    lv_label_set_long_mode((lv_obj_t *)s_bar_bento_dist, LV_LABEL_LONG_DOT);
-    lv_label_set_text((lv_obj_t *)s_bar_bento_dist, "晴朗 26.5°C · 空气优");
-    lv_obj_set_style_text_font((lv_obj_t *)s_bar_bento_dist, font_cn, 0);
-    lv_obj_set_style_text_color((lv_obj_t *)s_bar_bento_dist, lv_color_hex(0x34D399), 0);
-    lv_obj_set_style_text_align((lv_obj_t *)s_bar_bento_dist, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align((lv_obj_t *)s_bar_bento_dist, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_obj_set_width(s_bar_bento_dist, 218);
+    lv_label_set_long_mode(s_bar_bento_dist, LV_LABEL_LONG_DOT);
+    lv_label_set_text(s_bar_bento_dist, "晴朗 26.5°C · 空气优");
+    lv_obj_set_style_text_font(s_bar_bento_dist, font_cn, 0);
+    lv_obj_set_style_text_color(s_bar_bento_dist, lv_color_hex(0x34D399), 0);
+    lv_obj_set_style_text_align(s_bar_bento_dist, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_bar_bento_dist, LV_ALIGN_BOTTOM_MID, 0, -2);
 
     // 3. 下半区：双 Bento 科技卡片 (Y: 144, 高 106)
     lv_obj_t *bento_card1 = lv_obj_create(tile_home);
@@ -297,8 +359,8 @@ void ui_hub_init(void)
     lv_obj_set_style_text_color(lbl_air_q, lv_color_hex(0x10B981), 0);
     lv_obj_align(lbl_air_q, LV_ALIGN_TOP_LEFT, 0, 74);
 
-    // Bento 2 (右侧): 快捷照明与网络连接卡片
-    lv_obj_t *bento_card2 = lv_obj_create(tile_home);
+    // Bento 2 (右侧): 整块板载照明快捷按钮
+    lv_obj_t *bento_card2 = lv_button_create(tile_home);
     lv_obj_set_size(bento_card2, 111, 106);
     lv_obj_align(bento_card2, LV_ALIGN_TOP_RIGHT, -2, 144);
     lv_obj_set_style_bg_color(bento_card2, lv_color_hex(0x0F172A), 0);
@@ -307,14 +369,7 @@ void ui_hub_init(void)
     lv_obj_set_style_radius(bento_card2, 10, 0);
     lv_obj_set_style_pad_all(bento_card2, 6, 0);
     lv_obj_clear_flag(bento_card2, LV_OBJ_FLAG_SCROLLABLE);
-
-    s_btn_bento_led = lv_button_create(bento_card2);
-    lv_obj_set_size(s_btn_bento_led, 99, 36);
-    lv_obj_align(s_btn_bento_led, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_bg_color(s_btn_bento_led, lv_color_hex(0x1E293B), 0);
-    lv_obj_set_style_border_color(s_btn_bento_led, lv_color_hex(0x334155), 0);
-    lv_obj_set_style_border_width(s_btn_bento_led, 1, 0);
-    lv_obj_set_style_radius(s_btn_bento_led, 8, 0);
+    s_btn_bento_led = bento_card2;
     lv_obj_add_event_cb(s_btn_bento_led, on_led_btn_clicked, LV_EVENT_CLICKED, NULL);
 
     s_label_bento_led = lv_label_create(s_btn_bento_led);
@@ -322,29 +377,6 @@ void ui_hub_init(void)
     lv_obj_set_style_text_font(s_label_bento_led, font_cn, 0);
     lv_obj_set_style_text_color(s_label_bento_led, lv_color_hex(0xCBD5E1), 0);
     lv_obj_center(s_label_bento_led);
-
-    s_label_bento_ip = lv_label_create(bento_card2);
-    lv_obj_set_width(s_label_bento_ip, 99);
-    lv_label_set_long_mode(s_label_bento_ip, LV_LABEL_LONG_DOT);
-    lv_label_set_text(s_label_bento_ip, "网络: 192.168.4.1");
-    lv_obj_set_style_text_font(s_label_bento_ip, font_cn, 0);
-    lv_obj_set_style_text_color(s_label_bento_ip, lv_color_hex(0x38BDF8), 0);
-    lv_obj_align(s_label_bento_ip, LV_ALIGN_TOP_LEFT, 0, 44);
-
-    lv_obj_t *lbl_ap_mode = lv_label_create(bento_card2);
-    lv_obj_set_width(lbl_ap_mode, 99);
-    lv_label_set_long_mode(lbl_ap_mode, LV_LABEL_LONG_DOT);
-    lv_label_set_text(lbl_ap_mode, "热点: ESP32-Hub");
-    lv_obj_set_style_text_font(lbl_ap_mode, font_cn, 0);
-    lv_obj_set_style_text_color(lbl_ap_mode, lv_color_hex(0x64748B), 0);
-    lv_obj_align(lbl_ap_mode, LV_ALIGN_TOP_LEFT, 0, 74);
-
-    // 4. 底部微光滑动导航提示
-    lv_obj_t *lbl_nav_hint = lv_label_create(tile_home);
-    lv_label_set_text(lbl_nav_hint, "▼下拉设置  ▲上滑传感  ◀番茄钟  ▶应用");
-    lv_obj_set_style_text_font(lbl_nav_hint, font_cn, 0);
-    lv_obj_set_style_text_color(lbl_nav_hint, lv_color_hex(0x334155), 0);
-    lv_obj_align(lbl_nav_hint, LV_ALIGN_BOTTOM_MID, 0, -2);
 
     /* =========================================================================
      * 🎛️ (1, 0) 下拉控制中心 (Top Control Center)
@@ -520,22 +552,7 @@ void ui_hub_init(void)
     ui_pomodoro_init(tile_pomodoro);
 
     /* =========================================================================
-     * 🖼️ (2, 1) 左滑相册 (Right 1 Photo Album)
-     * ========================================================================= */
-    ui_photo_album_init(tile_photo);
-
-    /* =========================================================================
-     * 📖 (3, 1) 继续左滑小说 (Right 2 Novel Reader)
-     * ========================================================================= */
-    ui_novel_reader_init(tile_novel);
-
-    /* =========================================================================
-     * 🎮 (4, 1) 继续左滑 2048 触控游戏 (Right 3 2048 Game)
-     * ========================================================================= */
-    ui_game_2048_init(tile_game);
-
-    /* =========================================================================
-     * ⚙️ (5, 1) 继续左滑系统运维看板 (Right 4 System Settings)
+     * ⚙️ (2, 1) 右滑系统运维看板 (Right System Status)
      * ========================================================================= */
     // 标题卡
     lv_obj_t *sys_hero = lv_obj_create(tile_sys);
@@ -618,6 +635,115 @@ void ui_hub_init(void)
     lv_obj_set_style_text_font(lbl_sys_hm, font_cn, 0);
     lv_obj_center(lbl_sys_hm);
 
+    /* =========================================================================
+     * 📂 程序列表与独立应用层
+     * ========================================================================= */
+    s_app_layer = lv_obj_create(scr);
+    lv_obj_set_size(s_app_layer, 240, 280);
+    lv_obj_set_pos(s_app_layer, 0, 0);
+    lv_obj_set_style_bg_color(s_app_layer, lv_color_hex(0x0A0F1D), 0);
+    lv_obj_set_style_border_width(s_app_layer, 0, 0);
+    lv_obj_set_style_pad_all(s_app_layer, 0, 0);
+    lv_obj_clear_flag(s_app_layer, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_launcher = lv_obj_create(s_app_layer);
+    lv_obj_set_size(s_launcher, 240, 280);
+    lv_obj_set_pos(s_launcher, 0, 0);
+    lv_obj_set_style_bg_color(s_launcher, lv_color_hex(0x0A0F1D), 0);
+    lv_obj_set_style_border_width(s_launcher, 0, 0);
+    lv_obj_set_style_pad_all(s_launcher, 6, 0);
+    lv_obj_clear_flag(s_launcher, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *launcher_title = lv_label_create(s_launcher);
+    lv_label_set_text(launcher_title, "程序列表");
+    lv_obj_set_style_text_font(launcher_title, font_cn, 0);
+    lv_obj_set_style_text_color(launcher_title, lv_color_hex(0x38BDF8), 0);
+    lv_obj_align(launcher_title, LV_ALIGN_TOP_LEFT, 8, 6);
+
+    lv_obj_t *launcher_back = lv_button_create(s_launcher);
+    lv_obj_set_size(launcher_back, 86, 26);
+    lv_obj_align(launcher_back, LV_ALIGN_TOP_RIGHT, -6, 4);
+    lv_obj_set_style_bg_color(launcher_back, lv_color_hex(0x13243A), 0);
+    lv_obj_set_style_border_color(launcher_back, lv_color_hex(0x1E3A5F), 0);
+    lv_obj_set_style_border_width(launcher_back, 1, 0);
+    lv_obj_set_style_radius(launcher_back, 7, 0);
+    lv_obj_add_event_cb(launcher_back, on_return_home_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *launcher_back_label = lv_label_create(launcher_back);
+    lv_label_set_text(launcher_back_label, "返回首页");
+    lv_obj_set_style_text_font(launcher_back_label, font_cn, 0);
+    lv_obj_center(launcher_back_label);
+
+    lv_obj_t *launcher_hint = lv_label_create(s_launcher);
+    lv_label_set_text(launcher_hint, "选择一个应用");
+    lv_obj_set_style_text_font(launcher_hint, font_cn, 0);
+    lv_obj_set_style_text_color(launcher_hint, lv_color_hex(0x64748B), 0);
+    lv_obj_align(launcher_hint, LV_ALIGN_TOP_LEFT, 10, 36);
+
+    const char *app_names[] = {"2048", "电子相册", "小说阅读器"};
+    const char *app_descs[] = {"数字合并小游戏", "浏览 TF 卡照片", "阅读 TF 卡小说"};
+    const char *app_icons[] = {"2048", LV_SYMBOL_IMAGE, LV_SYMBOL_FILE};
+    const uint32_t icon_colors[] = {0xF59E0B, 0x38BDF8, 0xA78BFA};
+    for (size_t i = 0; i < 3; i++) {
+        lv_obj_t *btn = lv_button_create(s_launcher);
+        lv_obj_set_size(btn, 228, 48);
+        lv_obj_set_pos(btn, 6, 64 + i * 54);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x101E31), 0);
+        lv_obj_set_style_border_color(btn, lv_color_hex(0x1E3A5F), 0);
+        lv_obj_set_style_border_width(btn, 1, 0);
+        lv_obj_set_style_radius(btn, 9, 0);
+        lv_obj_add_event_cb(btn, on_launcher_app_clicked, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+
+        lv_obj_t *icon_badge = lv_obj_create(btn);
+        lv_obj_set_size(icon_badge, 36, 36);
+        lv_obj_set_pos(icon_badge, 6, 5);
+        lv_obj_set_style_bg_color(icon_badge, lv_color_hex(icon_colors[i]), 0);
+        lv_obj_set_style_border_width(icon_badge, 0, 0);
+        lv_obj_set_style_radius(icon_badge, 8, 0);
+        lv_obj_clear_flag(icon_badge, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *icon = lv_label_create(icon_badge);
+        lv_label_set_text(icon, app_icons[i]);
+        lv_obj_set_style_text_font(icon, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(icon, lv_color_hex(0x08111F), 0);
+        lv_obj_set_style_text_align(icon, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_center(icon);
+
+        lv_obj_t *name = lv_label_create(btn);
+        lv_label_set_text(name, app_names[i]);
+        lv_obj_set_style_text_font(name, font_cn, 0);
+        lv_obj_set_style_text_color(name, lv_color_hex(0xE2E8F0), 0);
+        lv_obj_align(name, LV_ALIGN_TOP_LEFT, 54, 6);
+
+        lv_obj_t *desc = lv_label_create(btn);
+        lv_label_set_text(desc, app_descs[i]);
+        lv_obj_set_style_text_font(desc, font_cn, 0);
+        lv_obj_set_style_text_color(desc, lv_color_hex(0x64748B), 0);
+        lv_obj_align(desc, LV_ALIGN_TOP_LEFT, 54, 25);
+
+        lv_obj_t *arrow = lv_label_create(btn);
+        lv_label_set_text(arrow, LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_font(arrow, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(arrow, lv_color_hex(0x64748B), 0);
+        lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -8, 0);
+    }
+
+    for (size_t i = 0; i < sizeof(s_app_pages) / sizeof(s_app_pages[0]); i++) {
+        s_app_pages[i] = lv_obj_create(s_app_layer);
+        lv_obj_set_size(s_app_pages[i], 240, 280);
+        lv_obj_set_pos(s_app_pages[i], 0, 0);
+        lv_obj_set_style_bg_color(s_app_pages[i], lv_color_hex(0x0A0F1D), 0);
+        lv_obj_set_style_border_width(s_app_pages[i], 0, 0);
+        lv_obj_set_style_pad_all(s_app_pages[i], 0, 0);
+        lv_obj_clear_flag(s_app_pages[i], LV_OBJ_FLAG_SCROLLABLE);
+    }
+    ui_game_2048_init(s_app_pages[HUB_APP_2048]);
+    ui_photo_album_init(s_app_pages[HUB_APP_PHOTO]);
+    ui_novel_reader_init(s_app_pages[HUB_APP_NOVEL]);
+    for (size_t i = 0; i < sizeof(s_app_pages) / sizeof(s_app_pages[0]); i++) {
+        lv_obj_add_flag(s_app_pages[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_add_flag(s_app_layer, LV_OBJ_FLAG_HIDDEN);
+
     // 默认聚焦到 (1, 1) 主桌面看板
     lv_tileview_set_tile_by_index(s_tileview, 1, 1, LV_ANIM_OFF);
 
@@ -635,7 +761,7 @@ void ui_hub_update_sensor_data(const bsp_sensor_data_t *data)
 
     char buf[64];
 
-    // 驱动 Tab 1 Cyber Bento 微卡片组件
+    // 驱动首页环境概览卡片
     if (s_label_bento_temp) {
         snprintf(buf, sizeof(buf), "%.1f°C", data->ntc_temperature);
         lv_label_set_text(s_label_bento_temp, buf);
@@ -670,7 +796,7 @@ void ui_hub_update_weather_full(const char *location, const char *weather_desc, 
         lv_label_set_text(s_label_bento_dist, location);
     }
     if (s_bar_bento_dist && weather_desc) {
-        lv_label_set_text((lv_obj_t *)s_bar_bento_dist, weather_desc);
+        lv_label_set_text(s_bar_bento_dist, weather_desc);
     }
     if (s_label_bento_temp) {
         char buf[32];
@@ -689,7 +815,7 @@ void ui_hub_update_system_status(const char *uptime_str, const char *ip_str, uin
 {
     bsp_lvgl_port_lock(0);
 
-    // 1. 顶部状态栏与 Bento 4 网络信息更新
+    // 1. 顶部状态栏与控制中心网络状态更新
     if (s_label_top_heap) {
         char buf[32];
         snprintf(buf, sizeof(buf), "%luK", (unsigned long)(heap / 1024));
@@ -716,11 +842,6 @@ void ui_hub_update_system_status(const char *uptime_str, const char *ip_str, uin
                 lv_label_set_text(s_label_top_net, "WiFi在线");
                 lv_obj_set_style_text_color(s_label_top_net, lv_color_hex(0x10B981), 0);
             }
-            if (s_label_bento_ip) {
-                char buf[64];
-                snprintf(buf, sizeof(buf), "网络: %s", ip_str);
-                lv_label_set_text(s_label_bento_ip, buf);
-            }
             if (s_lbl_cc_wifi) {
                 char buf[64];
                 snprintf(buf, sizeof(buf), "WiFi: %s", ip_str);
@@ -735,9 +856,6 @@ void ui_hub_update_system_status(const char *uptime_str, const char *ip_str, uin
                 lv_label_set_text(s_label_top_net, "AP配网中");
                 lv_obj_set_style_text_color(s_label_top_net, lv_color_hex(0xFBBF24), 0);
             }
-            if (s_label_bento_ip) {
-                lv_label_set_text(s_label_bento_ip, "配网: 192.168.4.1");
-            }
             if (s_lbl_cc_wifi) {
                 lv_label_set_text(s_lbl_cc_wifi, "热点: ESP32-Hub");
             }
@@ -749,9 +867,6 @@ void ui_hub_update_system_status(const char *uptime_str, const char *ip_str, uin
             if (s_label_top_net) {
                 lv_label_set_text(s_label_top_net, "连接中...");
                 lv_obj_set_style_text_color(s_label_top_net, lv_color_hex(0x64748B), 0);
-            }
-            if (s_label_bento_ip) {
-                lv_label_set_text(s_label_bento_ip, "网络: 正在连接 WiFi...");
             }
             if (s_lbl_cc_wifi) {
                 lv_label_set_text(s_lbl_cc_wifi, "WiFi: 正在连接...");

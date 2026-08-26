@@ -13,3 +13,8 @@ void ui_pomodoro_init(lv_obj_t *parent_tab);
  * @param sec   当前秒
  */
 void ui_pomodoro_tick(int hour, int min, int sec);
+
+/**
+ * @brief 更新大时钟模式下显示的真实日期
+ */
+void ui_pomodoro_update_date(const char *date_str);
