@@ -15,6 +15,8 @@
 #include "lwip/sockets.h"
 #include "sys_event_bus.h"
 #include "bsp_led.h"
+#include "esp_http_client.h"
+#include "cJSON.h"
 
 static const char *TAG = "NET_MGR";
 #define AP_SSID_NAME     "ESP32-Smart-Hub-WiFi"
@@ -157,6 +159,78 @@ esp_err_t net_manager_reset_credentials(void)
 }
 
 /* =========================================================================
+ * 🌍 动态公网 IP 地理位置解析
+ * ========================================================================= */
+static void fetch_ip_location_task(void *pvParameters)
+{
+    // 等待网络和 DNS 完全稳定
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
+    ESP_LOGI(TAG, "🌍 [IP 定位] 正在通过公网 IP 在线查询地理位置...");
+
+    esp_http_client_config_t config = {
+        .url = "http://ip-api.com/json/?lang=zh-CN",
+        .timeout_ms = 6000,
+        .method = HTTP_METHOD_GET,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        ESP_LOGE(TAG, "❌ 初始化 IP 定位 HTTP 客户端失败");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err == ESP_OK) {
+        esp_http_client_fetch_headers(client);
+        char *resp_buf = malloc(1024);
+        if (resp_buf) {
+            int read_len = esp_http_client_read(client, resp_buf, 1023);
+            if (read_len > 0) {
+                resp_buf[read_len] = '\0';
+                ESP_LOGI(TAG, "🌍 [IP 定位响应] %s", resp_buf);
+
+                cJSON *root = cJSON_Parse(resp_buf);
+                if (root) {
+                    cJSON *status = cJSON_GetObjectItem(root, "status");
+                    if (status && strcmp(status->valuestring, "success") == 0) {
+                        cJSON *city = cJSON_GetObjectItem(root, "city");
+                        cJSON *district = cJSON_GetObjectItem(root, "district");
+                        cJSON *region = cJSON_GetObjectItem(root, "regionName");
+
+                        char final_loc[64] = {0};
+                        const char *c_str = (city && city->valuestring) ? city->valuestring : "";
+                        const char *d_str = (district && district->valuestring && strlen(district->valuestring) > 0) ? district->valuestring : "";
+                        const char *r_str = (region && region->valuestring) ? region->valuestring : "";
+
+                        if (strlen(c_str) > 0 && strlen(d_str) > 0) {
+                            snprintf(final_loc, sizeof(final_loc), "%s · %s", c_str, d_str);
+                        } else if (strlen(r_str) > 0 && strlen(c_str) > 0) {
+                            snprintf(final_loc, sizeof(final_loc), "%s · %s", r_str, c_str);
+                        } else if (strlen(c_str) > 0) {
+                            snprintf(final_loc, sizeof(final_loc), "%s", c_str);
+                        }
+
+                        if (strlen(final_loc) > 0) {
+                            ESP_LOGI(TAG, "📍 [动态 IP 定位成功] 识别当前位置为: %s", final_loc);
+                            net_manager_set_location_str(final_loc);
+                        }
+                    }
+                    cJSON_Delete(root);
+                }
+            }
+            free(resp_buf);
+        }
+    } else {
+        ESP_LOGW(TAG, "⚠️ IP 定位请求连接失败: %s", esp_err_to_name(err));
+    }
+
+    esp_http_client_cleanup(client);
+    vTaskDelete(NULL);
+}
+
+/* =========================================================================
  * 📶 Wi-Fi 与 IP 事件处理
  * ========================================================================= */
 static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
@@ -192,6 +266,9 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
         if (s_mqtt_client) {
             esp_mqtt_client_start(s_mqtt_client);
         }
+
+        // 启动动态公网 IP 地理位置解析任务
+        xTaskCreate(fetch_ip_location_task, "ip_loc_task", 4096, NULL, 5, NULL);
     }
 }
 
@@ -348,6 +425,48 @@ void net_manager_get_uptime_str(char *buf, size_t max_len)
     int mins = (int)((uptime_sec % 3600) / 60);
     int secs = (int)(uptime_sec % 60);
     snprintf(buf, max_len, "%02d:%02d:%02d (%llds)", hrs, mins, secs, uptime_sec);
+}
+
+static char s_cur_location[64] = "深圳市 · 南山区";
+static char s_cur_weather[64]  = "晴朗 26°C · 空气优";
+
+void net_manager_get_location_str(char *buf, size_t max_len)
+{
+    strncpy(buf, s_cur_location, max_len);
+}
+
+void net_manager_set_location_str(const char *loc_str)
+{
+    if (loc_str) {
+        // 如果包含社区/附近等超长后缀，只截取城市与地区
+        char temp[64];
+        strncpy(temp, loc_str, sizeof(temp) - 1);
+        temp[sizeof(temp) - 1] = '\0';
+        char *p_dot = strstr(temp, " · ");
+        if (p_dot) {
+            // 检查第二个 · 并截断
+            char *p_second = strstr(p_dot + 3, " · ");
+            if (p_second) *p_second = '\0';
+            // 截掉"附近"字样
+            char *p_near = strstr(temp, "附近");
+            if (p_near) *p_near = '\0';
+            strncpy(s_cur_location, temp, sizeof(s_cur_location) - 1);
+        } else {
+            strncpy(s_cur_location, loc_str, sizeof(s_cur_location) - 1);
+        }
+    }
+}
+
+void net_manager_get_weather_str(char *buf, size_t max_len)
+{
+    strncpy(buf, s_cur_weather, max_len);
+}
+
+void net_manager_set_weather_str(const char *w_str)
+{
+    if (w_str) {
+        strncpy(s_cur_weather, w_str, sizeof(s_cur_weather) - 1);
+    }
 }
 
 void net_manager_get_ip_str(char *buf, size_t max_len)

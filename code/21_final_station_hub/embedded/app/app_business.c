@@ -7,6 +7,7 @@
 #include "bsp_sensor.h"
 #include "bsp_button.h"
 #include "bsp_led.h"
+#include "bsp_sdcard.h"
 #include "sys_event_bus.h"
 #include "sys_guard_wdt.h"
 #include "net_manager.h"
@@ -31,6 +32,11 @@ static void sensor_telemetry_task(void *pvParameters)
     while (1) {
         cycle_cnt++;
 
+        // 0. TF 卡热插拔动态侦测重试 (未挂载时每 4 秒自动尝试侦测挂载)
+        if (!bsp_sdcard_is_mounted() && (cycle_cnt % 4 == 0)) {
+            bsp_sdcard_init();
+        }
+
         // 1. 采集全套传感器与时钟/网络状态
         bsp_sensor_read_all(&sensor_data);
         net_manager_get_time_str(time_str, sizeof(time_str));
@@ -43,8 +49,13 @@ static void sensor_telemetry_task(void *pvParameters)
         ui_hub_update_sensor_data(&sensor_data);
         ui_hub_update_system_status(uptime_str, ip_str, sensor_data.free_heap_bytes, sensor_data.free_psram_bytes);
 
+        char loc_str[64] = {0};
+        char w_desc[64] = {0};
+        net_manager_get_location_str(loc_str, sizeof(loc_str));
+        net_manager_get_weather_str(w_desc, sizeof(w_desc));
+
         if (!net_manager_is_provisioning()) {
-            ui_hub_update_weather_full("深圳市 · 晴朗", "晴朗舒适 · 适宜阅读", sensor_data.ntc_temperature, sensor_data.dht_humidity);
+            ui_hub_update_weather_full(loc_str, w_desc, sensor_data.ntc_temperature, sensor_data.dht_humidity);
         }
 
         // 3. 广播事件到总线

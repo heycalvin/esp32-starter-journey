@@ -6,4 +6,3 @@ dependencies:
   espressif/cjson: ^1.7.18
   espressif/mqtt: ^1.1.0
   espressif/mdns: ^1.8.0
-  espressif/freetype: ^2.13.2

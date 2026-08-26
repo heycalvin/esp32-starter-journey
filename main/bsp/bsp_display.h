@@ -12,3 +12,5 @@
 esp_err_t bsp_display_init(esp_lcd_panel_io_handle_t *out_io, esp_lcd_panel_handle_t *out_panel);
 esp_err_t bsp_touch_init(esp_lcd_touch_handle_t *out_touch);
 void bsp_display_set_backlight(uint8_t brightness_pct);
+void bsp_display_set_backlight_pwm(uint8_t pct);  // 0~100% PWM 无级调光
+uint8_t bsp_display_get_backlight_pct(void);

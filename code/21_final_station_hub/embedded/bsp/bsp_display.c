@@ -41,7 +41,11 @@ esp_err_t bsp_display_init(esp_lcd_panel_io_handle_t *out_io, esp_lcd_panel_hand
         .quadhd_io_num = GPIO_NUM_NC,
         .max_transfer_sz = BSP_LCD_H_RES * 40 * sizeof(uint16_t),
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
+    esp_err_t ret = spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE("BSP_DISP", "spi_bus_initialize failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
 
     // 3. 配置 Panel IO
     esp_lcd_panel_io_spi_config_t io_cfg = {

@@ -16,7 +16,7 @@ static sdmmc_card_t *s_card = NULL;
 static esp_err_t try_mount_sdspi(sdmmc_card_t **out_card, const esp_vfs_fat_sdmmc_mount_config_t *mount_config)
 {
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = SPI2_HOST;
+    host.slot = SPI3_HOST; // 使用独立的 SPI3_HOST (VSPI)，绝不与屏幕 SPI2 冲突
     host.max_freq_khz = 10000;
 
     spi_bus_config_t bus_cfg = {
@@ -36,7 +36,11 @@ static esp_err_t try_mount_sdspi(sdmmc_card_t **out_card, const esp_vfs_fat_sdmm
     slot_config.gpio_cs = GPIO_NUM_13;
     slot_config.host_id = host.slot;
 
-    return esp_vfs_fat_sdspi_mount(MOUNT_POINT, &host, &slot_config, mount_config, out_card);
+    ret = esp_vfs_fat_sdspi_mount(MOUNT_POINT, &host, &slot_config, mount_config, out_card);
+    if (ret != ESP_OK) {
+        spi_bus_free(host.slot); // 挂载失败时释放总线，防止资源泄漏
+    }
+    return ret;
 }
 
 esp_err_t bsp_sdcard_init(void)
@@ -50,7 +54,8 @@ esp_err_t bsp_sdcard_init(void)
     };
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.max_freq_khz = 10000;
+    host.max_freq_khz = SDMMC_FREQ_DEFAULT; // 20MHz 稳定频率
+    host.flags = SDMMC_HOST_FLAG_1BIT | SDMMC_HOST_FLAG_4BIT;
 
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
     slot_config.width = 4;
@@ -67,7 +72,8 @@ esp_err_t bsp_sdcard_init(void)
 
     if (ret == ESP_OK) {
         s_is_mounted = true;
-        ESP_LOGI(TAG, "💾 [BSP] MicroSD/TF 卡挂载成功! (容量: %llu MB)", ((uint64_t)s_card->csd.capacity) * s_card->csd.sector_size / (1024 * 1024));
+        uint64_t cap_mb = ((uint64_t)s_card->csd.capacity) * s_card->csd.sector_size / (1024 * 1024);
+        ESP_LOGI(TAG, "🎉 [BSP] MicroSD/TF 卡热插拔挂载成功! (容量: %llu MB)", cap_mb);
         mkdir("/sdcard/photos", 0777);
         mkdir("/sdcard/fonts", 0777);
     } else {
