@@ -3,6 +3,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include "esp_http_server.h"
 #include "esp_wifi.h"
 #include "esp_log.h"
@@ -714,12 +716,122 @@ static esp_err_t ota_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* =====================================================================
+ * 10. 文件管理器 API: GET /api/files  返回 TF 卡文件列表 JSON
+ * ===================================================================== */
+static esp_err_t files_list_get_handler(httpd_req_t *req)
+{
+    if (!bsp_sdcard_is_mounted()) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        return httpd_resp_sendstr(req, "{\"error\":\"SD card not mounted\"}");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr_chunk(req, "{\"files\":[");
+
+    const char *dirs[] = {"/sdcard/photos", "/sdcard", NULL};
+    const char *dir_names[] = {"photos", "root", NULL};
+    bool first = true;
+    char item_buf[700];
+
+    for (int di = 0; dirs[di] != NULL; di++) {
+        DIR *dir = opendir(dirs[di]);
+        if (!dir) continue;
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (entry->d_name[0] == '.') continue;
+            char full_path[300];
+            snprintf(full_path, sizeof(full_path), "%s/%s", dirs[di], entry->d_name);
+            struct stat st;
+            long fsize = 0;
+            if (stat(full_path, &st) == 0) fsize = st.st_size;
+            snprintf(item_buf, sizeof(item_buf),
+                "%s{\"name\":\"%s\",\"dir\":\"%s\",\"path\":\"%s\",\"size\":%ld}",
+                first ? "" : ",",
+                entry->d_name, dir_names[di], full_path, fsize);
+            httpd_resp_sendstr_chunk(req, item_buf);
+            first = false;
+        }
+        closedir(dir);
+    }
+
+    httpd_resp_sendstr_chunk(req, "]}");
+    return httpd_resp_sendstr_chunk(req, NULL);
+}
+
+/* =====================================================================
+ * 11. 文件管理器 API: DELETE /api/file?path=<path>  删除指定文件
+ * ===================================================================== */
+static esp_err_t file_delete_handler(httpd_req_t *req)
+{
+    char query[256] = {0};
+    char path[128] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        httpd_query_key_value(query, "path", path, sizeof(path));
+    }
+    if (strlen(path) == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing path");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    if (remove(path) == 0) {
+        ESP_LOGI(TAG, "[FileManager] 删除文件: %s", path);
+        file_reader_rescan_photos();
+        return httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+    } else {
+        return httpd_resp_sendstr(req, "{\"status\":\"error\",\"msg\":\"delete failed\"}");
+    }
+}
+
+/* =====================================================================
+ * 12. 文件管理器 API: GET /download?path=<path>  下载指定文件
+ * ===================================================================== */
+static esp_err_t file_download_get_handler(httpd_req_t *req)
+{
+    char query[256] = {0};
+    char path[128] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        httpd_query_key_value(query, "path", path, sizeof(path));
+    }
+    if (strlen(path) == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing path");
+        return ESP_FAIL;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    char disp_hdr[200];
+    // 提取文件名设置下载标题
+    const char *fname = strrchr(path, '/');
+    fname = fname ? fname + 1 : path;
+    snprintf(disp_hdr, sizeof(disp_hdr), "attachment; filename=\"%s\"", fname);
+    httpd_resp_set_hdr(req, "Content-Disposition", disp_hdr);
+    char buf[1024];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) {
+            fclose(f);
+            return ESP_FAIL;
+        }
+    }
+    fclose(f);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
 esp_err_t web_server_init(void)
 {
     if (s_server) return ESP_OK;
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 20;
     config.stack_size = 10240;
 
     if (httpd_start(&s_server, &config) == ESP_OK) {
@@ -759,7 +871,17 @@ esp_err_t web_server_init(void)
         httpd_uri_t ota_uri = { .uri = "/api/ota", .method = HTTP_POST, .handler = ota_post_handler };
         httpd_register_uri_handler(s_server, &ota_uri);
 
-        ESP_LOGI(TAG, "🌐 [服务层] 嵌入式轻奢 Web 控制台与批量多图传输中枢启动 (端口: 80)！");
+        // 文件管理器 API
+        httpd_uri_t files_uri = { .uri = "/api/files", .method = HTTP_GET, .handler = files_list_get_handler };
+        httpd_register_uri_handler(s_server, &files_uri);
+
+        httpd_uri_t file_del_uri = { .uri = "/api/file", .method = HTTP_DELETE, .handler = file_delete_handler };
+        httpd_register_uri_handler(s_server, &file_del_uri);
+
+        httpd_uri_t download_uri = { .uri = "/download", .method = HTTP_GET, .handler = file_download_get_handler };
+        httpd_register_uri_handler(s_server, &download_uri);
+
+        ESP_LOGI(TAG, "🌐 [服务层] 嵌入式轻奈 Web 控制台、文件管理器、OTA 空投启动 (端口: 80)！");
         return ESP_OK;
     }
     return ESP_FAIL;

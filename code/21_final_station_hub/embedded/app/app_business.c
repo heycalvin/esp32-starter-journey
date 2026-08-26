@@ -13,6 +13,7 @@
 #include "net_manager.h"
 #include "file_reader.h"
 #include "ui_hub.h"
+#include "ui_pomodoro.h"
 
 static const char *TAG = "APP_BIZ";
 
@@ -48,6 +49,13 @@ static void sensor_telemetry_task(void *pvParameters)
         ui_hub_update_time_and_date(time_str, date_str);
         ui_hub_update_sensor_data(&sensor_data);
         ui_hub_update_system_status(uptime_str, ip_str, sensor_data.free_heap_bytes, sensor_data.free_psram_bytes);
+
+        // 更新番茄钟/大时钟 Tab（解析 HH:MM:SS 格式）
+        {
+            int h = 0, m = 0, s = 0;
+            sscanf(time_str, "%d:%d:%d", &h, &m, &s);
+            ui_pomodoro_tick(h, m, s);
+        }
 
         char loc_str[64] = {0};
         char w_desc[64] = {0};
