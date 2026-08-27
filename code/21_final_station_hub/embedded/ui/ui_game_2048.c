@@ -3,7 +3,7 @@
  * @brief 经典 2048 触控数字游戏
  *
  * 4×4 方格，手势四向滑动合并数字，目标达到 2048！
- * 使用 LVGL 事件手势 LV_EVENT_GESTURE 驱动。
+ * 使用按下/松手坐标计算四向滑动，避免依赖快速手势阈值。
  * 配色按数字大小自动渐变，视觉效果极佳。
  */
 #include "ui_game_2048.h"
@@ -236,11 +236,49 @@ static void new_game(void)
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0x94A3B8), 0);
 }
 
-/* ── 手势事件回调 ─────────────────────────────────────────────────────────── */
-static void on_gesture(lv_event_t *e)
+/* ── 棋盘触摸事件：普通滑动松手时也能稳定识别方向 ─────────────────────────── */
+#define SWIPE_MIN_DISTANCE 18
+
+static lv_point_t s_swipe_start;
+static bool s_swipe_tracking = false;
+
+static void on_board_touch(lv_event_t *e)
 {
-    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
-    do_move(dir);
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+
+    lv_point_t point;
+    lv_indev_get_point(indev, &point);
+
+    switch (lv_event_get_code(e)) {
+        case LV_EVENT_PRESSED:
+            s_swipe_start = point;
+            s_swipe_tracking = true;
+            break;
+
+        case LV_EVENT_RELEASED: {
+            if (!s_swipe_tracking) break;
+            s_swipe_tracking = false;
+
+            int dx = point.x - s_swipe_start.x;
+            int dy = point.y - s_swipe_start.y;
+            if (abs(dx) < SWIPE_MIN_DISTANCE && abs(dy) < SWIPE_MIN_DISTANCE) break;
+
+            if (abs(dx) >= abs(dy)) {
+                do_move(dx > 0 ? LV_DIR_RIGHT : LV_DIR_LEFT);
+            } else {
+                do_move(dy > 0 ? LV_DIR_BOTTOM : LV_DIR_TOP);
+            }
+            break;
+        }
+
+        case LV_EVENT_PRESS_LOST:
+            s_swipe_tracking = false;
+            break;
+
+        default:
+            break;
+    }
 }
 
 /* ── 重新开始按钮 ─────────────────────────────────────────────────────────── */
@@ -294,7 +332,7 @@ void ui_game_2048_init(lv_obj_t *parent_tab)
     lv_obj_set_style_text_font(lbl_new, font_cn, 0);
     lv_obj_center(lbl_new);
 
-    /* ── 棋盘容器（接收手势） ────────────────────────────────────────────── */
+    /* ── 棋盘容器（接收触摸滑动） ────────────────────────────────────────── */
     s_game_board = lv_obj_create(parent_tab);
     lv_obj_set_size(s_game_board, BOARD_W + CELL_GAP * 2, BOARD_W + CELL_GAP * 2);
     lv_obj_set_pos(s_game_board, (240 - BOARD_W) / 2 - 8, BOARD_OFFSET_Y);
@@ -304,7 +342,10 @@ void ui_game_2048_init(lv_obj_t *parent_tab)
     lv_obj_set_style_radius(s_game_board, 8, 0);
     lv_obj_set_style_pad_all(s_game_board, CELL_GAP, 0);
     lv_obj_clear_flag(s_game_board, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(s_game_board, on_gesture, LV_EVENT_GESTURE, NULL);
+    lv_obj_add_flag(s_game_board, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_PRESS_LOCK);
+    lv_obj_add_event_cb(s_game_board, on_board_touch, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_game_board, on_board_touch, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(s_game_board, on_board_touch, LV_EVENT_PRESS_LOST, NULL);
 
     /* ── 创建 4×4 格子 ───────────────────────────────────────────────────── */
     for (int r = 0; r < GRID_SIZE; r++) {

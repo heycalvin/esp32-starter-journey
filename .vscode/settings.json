@@ -6,6 +6,6 @@
     "*.c": "c",
     "*.h": "c"
   },
-  "idf.portWin": "COM3",
+  "idf.portWin": "COM4",
   "idf.currentSetup": "/Users/calvin/.espressif/v6.0.2/esp-idf"
 }

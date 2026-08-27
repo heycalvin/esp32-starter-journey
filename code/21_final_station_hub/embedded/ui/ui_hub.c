@@ -392,7 +392,7 @@ void ui_hub_init(void)
     lv_obj_clear_flag(cc_top_bar, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *lbl_cc_title = lv_label_create(cc_top_bar);
-    lv_label_set_text(lbl_cc_title, "🎛️ 控制中心");
+    lv_label_set_text(lbl_cc_title, "控制中心");
     lv_obj_set_style_text_font(lbl_cc_title, font_cn, 0);
     lv_obj_set_style_text_color(lbl_cc_title, lv_color_hex(0x38BDF8), 0);
     lv_obj_align(lbl_cc_title, LV_ALIGN_LEFT_MID, 6, 0);
@@ -489,7 +489,7 @@ void ui_hub_init(void)
     s_lbl_cc_wifi = lv_label_create(cc_wifi_card);
     lv_obj_set_width(s_lbl_cc_wifi, 104);
     lv_label_set_long_mode(s_lbl_cc_wifi, LV_LABEL_LONG_DOT);
-    lv_label_set_text(s_lbl_cc_wifi, "WiFi 在线");
+    lv_label_set_text(s_lbl_cc_wifi, "已连接");
     lv_obj_set_style_text_font(s_lbl_cc_wifi, font_cn, 0);
     lv_obj_set_style_text_color(s_lbl_cc_wifi, lv_color_hex(0xCBD5E1), 0);
     lv_obj_align(s_lbl_cc_wifi, LV_ALIGN_BOTTOM_LEFT, 2, -2);
@@ -506,9 +506,11 @@ void ui_hub_init(void)
     lv_obj_clear_flag(cc_hw_card, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *lbl_hw_info = lv_label_create(cc_hw_card);
-    lv_label_set_text(lbl_hw_info, "ESP32 · 240MHz · 2MB PSRAM · 8MB Flash");
+    lv_obj_set_width(lbl_hw_info, 216);
+    lv_label_set_text(lbl_hw_info, "ESP32 · 240MHz\n2MB PSRAM · 8MB Flash");
     lv_obj_set_style_text_font(lbl_hw_info, font_cn, 0);
     lv_obj_set_style_text_color(lbl_hw_info, lv_color_hex(0x64748B), 0);
+    lv_obj_set_style_text_align(lbl_hw_info, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(lbl_hw_info);
 
     // 底部双运维动作按钮 (Y: 196, 高 36)
@@ -844,7 +846,7 @@ void ui_hub_update_system_status(const char *uptime_str, const char *ip_str, uin
             }
             if (s_lbl_cc_wifi) {
                 char buf[64];
-                snprintf(buf, sizeof(buf), "WiFi: %s", ip_str);
+                snprintf(buf, sizeof(buf), "IP: %s", ip_str);
                 lv_label_set_text(s_lbl_cc_wifi, buf);
             }
         } else if (net_manager_is_provisioning()) {
@@ -869,7 +871,7 @@ void ui_hub_update_system_status(const char *uptime_str, const char *ip_str, uin
                 lv_obj_set_style_text_color(s_label_top_net, lv_color_hex(0x64748B), 0);
             }
             if (s_lbl_cc_wifi) {
-                lv_label_set_text(s_lbl_cc_wifi, "WiFi: 正在连接...");
+                lv_label_set_text(s_lbl_cc_wifi, "正在连接...");
             }
         }
     }
